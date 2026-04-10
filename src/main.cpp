@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <initializer_list>
 #include <tower_defense.h>
@@ -142,12 +144,57 @@ struct Waypoints {
 namespace tower_defense {
 
 struct Game {
+    Game() {
+        window = flecs::entity::null();
+        level = flecs::entity::null();
+        center = {0,0,0};
+        size = 0;
+        current_level = 1;
+        max_level = 10;
+        enemies_to_spawn = 0;
+        enemies_spawned = 0;
+        enemies_alive = 0;
+        failed = false;
+        won = false;
+    }
+
     flecs::entity window;
     flecs::entity level;
     
     Position center;
     float size;
+
+    int current_level;
+    int max_level;
+    int enemies_to_spawn;
+    int enemies_spawned;
+    int enemies_alive;
+    bool failed;
+    bool won;
 };
+
+static int enemy_count_for_level(int level) {
+    return 5 + (level - 1) * 2;
+}
+
+static void check_level_complete(flecs::world& ecs, Game& g) {
+    if (g.failed || g.won) {
+        return;
+    }
+
+    if (g.enemies_spawned >= g.enemies_to_spawn && g.enemies_alive == 0) {
+        if (g.current_level >= g.max_level) {
+            g.won = true;
+            std::cout << "You win! All levels completed." << std::endl;
+        } else {
+            g.current_level += 1;
+            g.enemies_spawned = 0;
+            g.enemies_alive = 0;
+            g.enemies_to_spawn = enemy_count_for_level(g.current_level);
+            std::cout << "Starting level " << g.current_level << " (" << g.enemies_to_spawn << " enemies)" << std::endl;
+        }
+    }
+}
 
 struct Level {
     Level() {
@@ -418,8 +465,116 @@ bool find_path(Position& p, Direction& d, const Level& lvl) {
     return false;
 }
 
-void SpawnEnemy(flecs::iter& it, size_t, const Game& g) {
+static bool turret_at_tile(flecs::world& ecs, float x, float z) {
+    bool found = false;
+    ecs.each([&](flecs::entity e, const Position& p, const Turret&) {
+        if (fabs(p.x - x) < 0.1f && fabs(p.z - z) < 0.1f) {
+            found = true;
+        }
+    });
+    return found;
+}
+
+static void remove_tree_at(flecs::world& ecs, float x, float z) {
+    ecs.each([&](flecs::entity e, const Position& p) {
+        if (fabs(p.x - x) < 0.1f && fabs(p.z - z) < 0.1f) {
+            if (e.has<prefabs::Tree>()) {
+                e.destruct();
+            }
+        }
+    });
+}
+
+static bool try_build_turret(flecs::world& ecs, const Level& lvl, bool laser) {
+    std::vector<transform::Position2> candidates;
+
+    for (int x = 0; x < TileCountX * LevelScale; x ++) {
+        for (int z = 0; z < TileCountZ * LevelScale; z ++) {
+            if (lvl.map[0](x, z) != TileKind::Turret) {
+                continue;
+            }
+
+            float xc = toX(x);
+            float zc = toZ(z);
+            if (!turret_at_tile(ecs, xc, zc)) {
+                candidates.push_back({(float)x, (float)z});
+            }
+        }
+    }
+
+    if (candidates.empty()) {
+        return false;
+    }
+
+    auto tile = candidates[rand() % candidates.size()];
+    float xc = toX(tile.x);
+    float zc = toZ(tile.y);
+
+    remove_tree_at(ecs, xc, zc);
+
+    auto entity = ecs.entity().child_of<turrets>();
+    if (laser) {
+        entity.is_a<prefabs::Laser>();
+    } else {
+        entity.is_a<prefabs::Cannon>();
+    }
+    entity.set<Position>({xc, TileHeight / 2, zc});
+    return true;
+}
+
+static bool try_delete_turret(flecs::world& ecs) {
+    bool deleted = false;
+    ecs.each([&](flecs::entity e, const Position& p, const Turret&) {
+        if (!deleted) {
+            e.destruct();
+            deleted = true;
+        }
+    });
+    return deleted;
+}
+
+void TurretControl(flecs::iter& it, size_t, const Input& input, const Game& g) {
+    if (g.failed || g.won) {
+        return;
+    }
+
+    if (input.keys[ECS_KEY_B].down) {
+        if (try_build_turret(it.world(), g.level.get<Level>(), false)) {
+            std::cout << "Built a cannon turret." << std::endl;
+        } else {
+            std::cout << "No valid turret location available." << std::endl;
+        }
+    }
+
+    if (input.keys[ECS_KEY_L].down) {
+        if (try_build_turret(it.world(), g.level.get<Level>(), true)) {
+            std::cout << "Built a laser turret." << std::endl;
+        } else {
+            std::cout << "No valid laser turret location available." << std::endl;
+        }
+    }
+
+    if (input.keys[ECS_KEY_X].down || input.keys[ECS_KEY_DELETE].down) {
+        if (try_delete_turret(it.world())) {
+            std::cout << "Deleted a turret." << std::endl;
+        } else {
+            std::cout << "No turret to delete." << std::endl;
+        }
+    }
+}
+
+void SpawnEnemy(flecs::iter& it, size_t, Game& g) {
+    if (g.failed || g.won) {
+        return;
+    }
+
+    if (g.enemies_spawned >= g.enemies_to_spawn) {
+        return;
+    }
+
     const Level& lvl = g.level.get<Level>();
+    g.enemies_spawned += 1;
+    g.enemies_alive += 1;
 
     it.world().entity().child_of<enemies>().is_a<prefabs::Enemy>()
         .set<Direction>({0})
@@ -429,12 +584,15 @@ void SpawnEnemy(flecs::iter& it, size_t, const Game& g) {
 }
 
 void MoveEnemy(flecs::iter& it, size_t i,
-    Position& p, Direction& d, const Game& g)
+    Position& p, Direction& d, Game& g)
 {
     const Level& lvl = g.level.get<Level>();
 
     if (find_path(p, d, lvl)) {
-        it.entity(i).destruct(); // Enemy made it to the end
+        g.enemies_alive = std::max(0, g.enemies_alive - 1);
+        g.failed = true;
+        std::cout << "A monster escaped! Game over." << std::endl;
+        it.entity(i).destruct();
     } else {
         p.x += dir[d.value].x * EnemySpeed * it.delta_time();
         p.z += dir[d.value].y * EnemySpeed * it.delta_time();
@@ -774,20 +932,29 @@ void HitTarget(flecs::iter& it, size_t i, Position& p, Health& h, Box& b,
     }
 }
 
-void DestroyEnemy(flecs::entity e, Health& h, Position& p) {
+void DestroyEnemy(flecs::entity e, Health& h, Position& p, Game& g) {
     flecs::world ecs = e.world();
     if (h.value <= 0) {
+        g.enemies_alive = std::max(0, g.enemies_alive - 1);
         e.destruct();
         explode(ecs, p, 1.1, 1.0, {0.5, 0.2, 0.1}, {0.7, 0.1, 0.05});
+        check_level_complete(ecs, g);
     }
 }
 
 void init_components(flecs::world& ecs) {
     ecs.component<Game>()
         .member("window", &Game::window)
-        .member("level", &Game::window)
+        .member("level", &Game::level)
         .member("center", &Game::center)
-        .member("size", &Game::size);
+        .member("size", &Game::size)
+        .member("current_level", &Game::current_level)
+        .member("max_level", &Game::max_level)
+        .member("enemies_to_spawn", &Game::enemies_to_spawn)
+        .member("enemies_spawned", &Game::enemies_spawned)
+        .member("enemies_alive", &Game::enemies_alive)
+        .member("failed", &Game::failed)
+        .member("won", &Game::won);
 
     ecs.component<Enemy>();
     ecs.component<Laser>();
@@ -825,8 +992,16 @@ void init_game(flecs::world& ecs) {
     ecs.component<Game>().add(flecs::Singleton);
 
     Game& g = ecs.ensure<Game>();
+    g.current_level = 1;
+    g.max_level = 10;
+    g.enemies_to_spawn = enemy_count_for_level(g.current_level);
+    g.enemies_spawned = 0;
+    g.enemies_alive = 0;
+    g.failed = false;
+    g.won = false;
     g.center = { toX(TileCountX / 2), 0, toZ(TileCountZ / 2) };
     g.size = TileCountX * (TileSize + TileSpacing) + 2;
+    std::cout << "Starting level " << g.current_level << " (" << g.enemies_to_spawn << " enemies)" << std::endl;
 
     // Camera, lighting & canvas configuration
     ecs.script().filename("etc/assets/app.flecs").run();
@@ -931,12 +1106,16 @@ void init_systems(flecs::world& ecs) {
     ecs.scope(ecs.entity("tower_defense"), [&](){ // Keep root scope clean
 
     // Spawn enemies periodically
-    ecs.system<const Game>("SpawnEnemy")
+    ecs.system<Game>("SpawnEnemy")
         .interval(EnemySpawnInterval)
         .each(SpawnEnemy);
 
+    // Turret build/delete controls (B: cannon, L: laser, X/Delete: remove)
+    ecs.system<const Input, const Game>("TurretControl")
+        .each(TurretControl);
+
     // Move enemies
-    ecs.system<Position, Direction, const Game>("MoveEnemy")
+    ecs.system<Position, Direction, Game>("MoveEnemy")
         .with<Enemy>()
         .each(MoveEnemy);
 
@@ -994,7 +1173,7 @@ void init_systems(flecs::world& ecs) {
         .each(HitTarget);
 
     // Destroy enemy when health goes to 0
-    ecs.system<Health, Position>("DestroyEnemy")
+    ecs.system<Health, Position, Game>("DestroyEnemy")
         .with<Enemy>()
         .each(DestroyEnemy);
 
