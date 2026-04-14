@@ -4,6 +4,8 @@
 #include <initializer_list>
 #include <tower_defense.h>
 #include <vector>
+#include <string>
+#include <sstream>
 
 using namespace std;
 using namespace flecs::components;
@@ -143,22 +145,28 @@ struct Waypoints {
 
 namespace tower_defense {
 
+// Forward declaration
+struct ScoreDigit;
+struct Billboard;
+
 struct Game {
     Game() {
-        window = flecs::entity::null();
         level = flecs::entity::null();
         center = {0,0,0};
         size = 0;
         current_level = 1;
-        max_level = 10;
+        max_level = 5;
         enemies_to_spawn = 0;
         enemies_spawned = 0;
         enemies_alive = 0;
+        score = 0;
         failed = false;
         won = false;
+        fireworks_timer = 0;
+        billboard_created = false;
+        displayed_score = -1;
     }
 
-    flecs::entity window;
     flecs::entity level;
     
     Position center;
@@ -169,8 +177,12 @@ struct Game {
     int enemies_to_spawn;
     int enemies_spawned;
     int enemies_alive;
+    int score;
     bool failed;
     bool won;
+    float fireworks_timer;
+    bool billboard_created;
+    int displayed_score;  // Track what score is currently displayed
 };
 
 static int enemy_count_for_level(int level) {
@@ -185,7 +197,9 @@ static void check_level_complete(flecs::world& ecs, Game& g) {
     if (g.enemies_spawned >= g.enemies_to_spawn && g.enemies_alive == 0) {
         if (g.current_level >= g.max_level) {
             g.won = true;
-            std::cout << "You win! All levels completed." << std::endl;
+            std::cout << "=== VICTORY! ===" << std::endl;
+            std::cout << "All " << g.max_level << " levels completed!" << std::endl;
+            std::cout << "Final Score: " << g.score << std::endl;
         } else {
             g.current_level += 1;
             g.enemies_spawned = 0;
@@ -307,6 +321,7 @@ namespace prefabs {
     struct Spark { };
     struct Ion { };
     struct Bolt { };
+    struct Firework { };
 
     struct Turret {
         struct Base { };
@@ -327,6 +342,12 @@ namespace prefabs {
     };
 }
 
+// Tag component for score digit entities (used for cleanup)
+struct ScoreDigit { };
+
+// Tag component for billboard text entities
+struct Billboard { };
+
 }
 
 using namespace tower_defense;
@@ -343,9 +364,118 @@ struct enemies { };
 // Scope for particles
 struct particles { };
 
+// Scope for HUD elements (score display)
+struct hud { };
+
 // Utility functions
 float randf(float scale) {
     return ((float)rand() / (float)RAND_MAX) * scale;
+}
+
+// ============================================================
+// Pixel font data (5 rows x 3 cols) for digits and letters
+// Each row is 3 bits, top-to-bottom
+// ============================================================
+struct PixelGlyph {
+    int rows[5]; // each row: 3 bits (bit2=left, bit1=mid, bit0=right)
+};
+
+static const PixelGlyph digit_glyphs[10] = {
+    {7,5,5,5,7}, // 0
+    {2,6,2,2,7}, // 1
+    {7,1,7,4,7}, // 2
+    {7,1,7,1,7}, // 3
+    {5,5,7,1,1}, // 4
+    {7,4,7,1,7}, // 5
+    {7,4,7,5,7}, // 6
+    {7,1,1,1,1}, // 7
+    {7,5,7,5,7}, // 8
+    {7,5,7,1,7}, // 9
+};
+
+static PixelGlyph char_to_glyph(char c) {
+    switch(c) {
+        case 'A': return {7,5,7,5,5};
+        case 'C': return {7,4,4,4,7};
+        case 'D': return {6,5,5,5,6};
+        case 'E': return {7,4,7,4,7};
+        case 'F': return {7,4,7,4,4};
+        case 'G': return {7,4,5,5,7};
+        case 'I': return {7,2,2,2,7};
+        case 'L': return {4,4,4,4,7};
+        case 'M': return {5,7,5,5,5};
+        case 'N': return {5,7,7,5,5};
+        case 'O': return {7,5,5,5,7};
+        case 'P': return {7,5,7,4,4};
+        case 'R': return {7,5,7,5,5};
+        case 'S': return {7,4,7,1,7};
+        case 'T': return {7,2,2,2,2};
+        case 'V': return {5,5,5,5,7};
+        case 'Y': return {5,5,7,2,2};
+        case '!': return {2,2,2,0,2};
+        case ' ': return {0,0,0,0,0};
+        case '0': return digit_glyphs[0];
+        case '1': return digit_glyphs[1];
+        case '2': return digit_glyphs[2];
+        case '3': return digit_glyphs[3];
+        case '4': return digit_glyphs[4];
+        case '5': return digit_glyphs[5];
+        case '6': return digit_glyphs[6];
+        case '7': return digit_glyphs[7];
+        case '8': return digit_glyphs[8];
+        case '9': return digit_glyphs[9];
+        default:  return {0,0,0,0,0};
+    }
+}
+
+// Build a string of glyphs using 3D boxes. Returns the created entities.
+// base_pos: world position of the top-left pixel of the first glyph
+// pixel_size: size of each "pixel" block
+// spacing: horizontal gap between glyphs (in pixel_size units)
+// color: RGB color of the blocks
+// emissive_val: emissive intensity for glow
+// add_billboard: if true, add Billboard tag to entities
+static std::vector<flecs::entity> build_text_3d(
+    flecs::world& ecs,
+    const Position& base_pos,
+    float pixel_size,
+    float spacing,
+    const std::string& text,
+    const Color& color,
+    float emissive_val = 1.0f,
+    bool add_billboard = false)
+{
+    std::vector<flecs::entity> entities;
+    float advance = 3.0f * pixel_size + spacing * pixel_size;
+    float cursor_x = base_pos.x;
+    
+    for (size_t ci = 0; ci < text.size(); ci++) {
+        PixelGlyph g = char_to_glyph(text[ci]);
+        for (int row = 0; row < 5; row++) {
+            for (int col = 0; col < 3; col++) {
+                if (g.rows[row] & (1 << (2 - col))) {
+                    float px = cursor_x + col * pixel_size;
+                    float py = base_pos.y - row * pixel_size;
+                    float pz = base_pos.z;
+                    
+                    auto e = ecs.entity().child_of<hud>();
+                    e.set<Position>({px, py, pz})
+                     .set<Box>({pixel_size * 0.9f, pixel_size * 0.9f, pixel_size * 0.9f})
+                     .set<Color>(color)
+                     .set<Emissive>({emissive_val});
+                    
+                    if (add_billboard) {
+                        e.add<Billboard>();
+                    }
+                    
+                    entities.push_back(e);
+                }
+            }
+        }
+        cursor_x += advance;
+    }
+    
+    return entities;
 }
 
 float to_coord(float x) {
@@ -422,7 +552,6 @@ float rotate_to(float cur, float target, float increment) {
 
 // Check if enemy needs to change direction
 bool find_path(Position& p, Direction& d, const Level& lvl) {
-    // Check if enemy is in center of tile
     float t_x = from_x(p.x);
     float t_y = from_z(p.z);
     int ti_x = (int)t_x;
@@ -430,35 +559,27 @@ bool find_path(Position& p, Direction& d, const Level& lvl) {
     float td_x = t_x - ti_x;
     float td_y = t_y - ti_y;
 
-    // If enemy is in center of tile, decide where to go next
     if (td_x < 0.1 && td_y < 0.1) {
         grid<TileKind> *tiles = lvl.map;
-
-        // Compute backwards direction so we won't try to go there
         int backwards = (d.value + 2) % 4;
 
-        // Find a direction that the enemy can move to
         for (int i = 0; i < 3; i ++) {
             int n_x = ti_x + dir[d.value].x;
             int n_y = ti_y + dir[d.value].y;
 
             if (n_x >= 0 && n_x <= TileCountX) {
                 if (n_y >= 0 && n_y <= TileCountZ) {
-                    // Next tile is still on the grid, test if it's a path
                     if (tiles[0](n_x, n_y) == TileKind::Path) {
-                        // Next tile is a path, so continue along current direction
                         return false;
                     }
                 }
             }
 
-            // Try next direction. Make sure not to move backwards
             do {
                 d.value = (d.value + 1) % 4;
             } while (d.value == backwards);
         }
 
-        // If enemy was not able to find a next direction, it reached the end
         return true;        
     }
 
@@ -603,14 +724,12 @@ void ClearTarget(Target& target, Position& p) {
     flecs::entity t = target.target;
     if (t) {
         if (!t.is_alive()) {
-            // Target was destroyed or made it to the end
             target.target = flecs::entity::null();
             target.lock = false;
         } else {
             Position target_pos = t.get<Position>();
             float distance = glm_vec3_distance(p, target_pos);
             if (distance > TurretRange) {
-                // Target is out of range
                 target.target = flecs::entity::null();
                 target.lock = false;
             }
@@ -622,14 +741,12 @@ void FindTarget(flecs::iter& it, size_t i, Turret& turret, Target& target,
     Position& p, const SpatialQuery& q, SpatialQueryResult& qr) 
 {
     if (target.target) {
-        // Already has a target
         return;
     }
 
     flecs::entity enemy;
     float distance = 0, min_distance = 0;
 
-    // Find all enemies around the turret's position within TurretRange
     q.findn(p, TurretRange, qr);
     for (auto e : qr) {
         distance = glm_vec3_distance(p, e.pos);
@@ -644,7 +761,6 @@ void FindTarget(flecs::iter& it, size_t i, Turret& turret, Target& target,
     }
 
     if (min_distance) {
-        // Select the closest enemy in range as target
         target.target = enemy;
         target.distance = min_distance;
     }
@@ -666,7 +782,6 @@ void AimTarget(flecs::iter& it, size_t i,
         target.prev_position[2] = target_p.z;
         float distance = glm_vec3_distance(p, target_p);
 
-        // Crude correction for enemy movement and bullet travel time
         flecs::entity beam = e.target<prefabs::Laser::Head::Beam>();
         if (!beam) {
             glm_vec3_scale(diff, distance * 1, diff);
@@ -702,7 +817,6 @@ void FireAtTarget(flecs::iter& it, size_t i,
     flecs::entity e = it.entity(i);
 
     if (turret.t_since_fire < turret.fire_interval) {
-        // Cooldown so we don't shoot too fast
         return;
     }
 
@@ -717,7 +831,6 @@ void FireAtTarget(flecs::iter& it, size_t i,
         glm_vec3_normalize(v);
 
         if (!is_laser) {
-            // Regular cannon with two barrels
             pos.x += 1.7 * TurretCannonLength * -v[0];
             pos.z += 1.7 * TurretCannonLength * -v[2];
             glm_vec3_scale(v, BulletSpeed, v);
@@ -725,7 +838,6 @@ void FireAtTarget(flecs::iter& it, size_t i,
             pos.y = 1.1;
             pos.z += cos(angle) * 0.8 * TurretCannonOffset * turret.lr;
 
-            // Alternate between left and right barrel
             flecs::entity barrel;
             if (turret.lr == -1) {
                 barrel = e.target<prefabs::Cannon::Head::BarrelLeft>();
@@ -734,10 +846,8 @@ void FireAtTarget(flecs::iter& it, size_t i,
             }
             turret.lr = -turret.lr;
 
-            // Move active barrel backwards to simulate recoil
             barrel.set<Recoil>({ RecoilAmount });
 
-            // Create a bullet and nozzle flash
             ecs.entity().is_a<prefabs::Bullet>()
                 .child_of<particles>()
                 .set<Position>(pos)
@@ -747,14 +857,12 @@ void FireAtTarget(flecs::iter& it, size_t i,
                 .set<Position>(pos)
                 .set<Rotation>({0, angle, 0});
 
-            // Create nozzle flash light
             ecs.entity()
                 .child_of<particles>()
                 .set<Position>({pos.x, pos.y, pos.z})
                 .set<PointLight>({{0.5, 0.4, 0.2}, 0.4})
                 .set<ExplosionLight>({1.0, 7.0}); 
         } else {
-            // Enable laser beam
             e.target<prefabs::Laser::Head::Beam>().enable();
             pos.x += 1.4 * -v[0];
             pos.y = 1.1;
@@ -774,7 +882,6 @@ void BeamControl(flecs::iter& it, size_t i,
     flecs::entity beam = it.entity(i).target<prefabs::Laser::Head::Beam>();
     if (beam && (!target.target || !target.lock)) {
         if (beam.enabled()) {
-            // Disable beam if laser turret has no target
             beam.disable();
             beam.set<Box>({0.0, 0.0, 0});
         }
@@ -787,19 +894,16 @@ void BeamControl(flecs::iter& it, size_t i,
             return;
         }
 
-        // Position beam at enemy
         Position target_pos = enemy.get<Position>();
         float distance = glm_vec3_distance(p, target_pos);
         beam.set<Position>({ (distance / 2), 0.1, 0.0 });
         beam.set<Box>({BeamSize, BeamSize, distance});
 
-        // Subtract health from enemy as long as beam is firing
         enemy.get([&](Health& h, HitCooldown& hc) {
             h.value -= BeamDamage * it.delta_time();
             hc.value = HitCooldownInitialValue;
         });
 
-        // Generate spark   
         {     
             float x_r = randf(ECS_PI_2);
             float y_r = randf(ECS_PI_2);
@@ -861,7 +965,6 @@ void ProgressParticle(flecs::iter& it, size_t i,
 }
 
 void explode(flecs::world& ecs, Position& p, float pC, float rC, Color rgbRnd, Color rgbC) {
-    // Create explosion particles that fade into smoke
     for (int s = 0; s < SmokeParticleCount * pC; s ++) {
         float red = randf(rgbRnd.r) + rgbC.r;
         float green = randf(rgbRnd.g) + rgbC.g;
@@ -879,7 +982,6 @@ void explode(flecs::world& ecs, Position& p, float pC, float rC, Color rgbRnd, C
             .set<Color>({red, green, blue});
     }
 
-    // Create sparks
     for (int s = 0; s < SparkParticleCount * pC; s ++) {
         float x_r = randf(ECS_PI_2);
         float y_r = randf(ECS_PI_2);
@@ -894,12 +996,232 @@ void explode(flecs::world& ecs, Position& p, float pC, float rC, Color rgbRnd, C
                 cos(x_r) * speed, fabs(cos(y_r) * speed), cos(z_r) * speed});
     }
 
-    // Create explosion light
     ecs.entity()
         .child_of<particles>()
         .set<Position>({p.x, p.y, p.z})
         .set<PointLight>({{rgbC.r, rgbC.g, rgbC.b}, 1.25f + pC / 2.0f})
         .set<ExplosionLight>({0.75f * (0.5f + pC / 2.0f), 1.5f});
+}
+
+// Firework colors for celebration
+static const Color firework_colors[] = {
+    {1.0, 0.2, 0.2},  // Red
+    {0.2, 1.0, 0.2},  // Green
+    {0.3, 0.3, 1.0},  // Blue
+    {1.0, 1.0, 0.2},  // Yellow
+    {1.0, 0.2, 1.0},  // Magenta
+    {0.2, 1.0, 1.0},  // Cyan
+    {1.0, 0.6, 0.1},  // Orange
+    {0.8, 0.4, 1.0},  // Purple
+};
+
+static const int firework_color_count = sizeof(firework_colors) / sizeof(firework_colors[0]);
+
+static void spawn_firework(flecs::world& ecs, const Position& center) {
+    float ox = randf(16.0) - 8.0;
+    float oy = randf(8.0) + 5.0;
+    float oz = randf(16.0) - 8.0;
+    
+    Position burst_pos = {center.x + ox, center.y + oy, center.z + oz};
+    
+    Color base_color = firework_colors[rand() % firework_color_count];
+    
+    int burst_count = 40 + rand() % 20;
+    for (int i = 0; i < burst_count; i++) {
+        float theta = randf(ECS_PI_2);
+        float phi = randf(GLM_PI);
+        float speed = randf(4.0) + 3.0;
+        
+        float vx = sin(phi) * cos(theta) * speed;
+        float vy = sin(phi) * sin(theta) * speed;
+        float vz = cos(phi) * speed;
+        
+        float size = 0.2 + randf(0.25);
+        
+        float r_var = base_color.r + randf(0.2) - 0.1;
+        float g_var = base_color.g + randf(0.2) - 0.1;
+        float b_var = base_color.b + randf(0.2) - 0.1;
+        
+        ecs.scope<particles>().entity().is_a<prefabs::Firework>()
+            .set<Position>({burst_pos.x, burst_pos.y, burst_pos.z})
+            .set<Box>({size, size, size})
+            .set<Color>({r_var, g_var, b_var})
+            .set<Velocity>({vx, vy, vz});
+    }
+    
+    ecs.entity()
+        .child_of<particles>()
+        .set<Position>({burst_pos.x, burst_pos.y, burst_pos.z})
+        .set<PointLight>({{base_color.r, base_color.g, base_color.b}, 2.0f})
+        .set<ExplosionLight>({1.5f, 0.8f});
+}
+
+// Victory celebration: spawn fireworks periodically
+void VictoryCelebration(flecs::iter& it, size_t, Game& g) {
+    if (!g.won) {
+        return;
+    }
+    
+    g.fireworks_timer += it.delta_time();
+    
+    if (g.fireworks_timer >= 0.3f) {
+        g.fireworks_timer = 0;
+        spawn_firework(it.world(), g.center);
+    }
+}
+
+// ============================================================
+// ScoreDisplay: Update HUD score in 3D space (above map)
+// Rebuilds score text only when score changes
+// ============================================================
+void ScoreDisplay(flecs::iter& it, size_t, Game& g) {
+    // Only rebuild when score changes
+    if (g.displayed_score == g.score) {
+        return;
+    }
+    
+    flecs::world ecs = it.world();
+    
+    // Destroy old score digits
+    ecs.each([&](flecs::entity e, const ScoreDigit&) {
+        e.destruct();
+    });
+    
+    // Score display position: above the map, offset to the left
+    float score_y = 14.0f;
+    float score_x = g.center.x - 10.0f;
+    float score_z = g.center.z;
+    
+    // Format score text
+    std::ostringstream oss;
+    oss << "SCORE " << g.score;
+    std::string score_text = oss.str();
+    
+    // Build score text with small bright pixels
+    float pixel_size = 0.35f;
+    float spacing = 1.0f;
+    auto entities = build_text_3d(ecs,
+        {score_x, score_y, score_z},
+        pixel_size, spacing, score_text,
+        {1.0f, 0.9f, 0.3f}, 3.0f, false);  // Gold color, high emissive
+    
+    for (auto& e : entities) {
+        e.add<ScoreDigit>();
+    }
+    
+    // Add a point light behind the score for extra visibility
+    float text_width = score_text.size() * (3.0f * pixel_size + spacing * pixel_size);
+    ecs.entity().child_of<hud>()
+        .set<Position>({score_x + text_width / 2, score_y - 1.0f, score_z})
+        .set<PointLight>({{1.0f, 0.9f, 0.3f}, 3.0f})
+        .add<ScoreDigit>();
+    
+    g.displayed_score = g.score;
+}
+
+// ============================================================
+// VictoryBillboard: Create a large 3D billboard when game is won
+// Only creates once when won=true
+// ============================================================
+void VictoryBillboard(flecs::iter& it, size_t, Game& g) {
+    if (!g.won || g.billboard_created) {
+        return;
+    }
+    
+    flecs::world ecs = it.world();
+    g.billboard_created = true;
+    
+    // Billboard position: high above center of map
+    float by = 12.0f;
+    float bx = g.center.x;
+    float bz = g.center.z;
+    
+    float large_pixel = 0.8f;  // Large pixel size for billboard
+    float large_spacing = 1.2f;
+    
+    // "VICTORY!" - large, bright gold
+    std::string victory_text = "VICTORY!";
+    float victory_width = victory_text.size() * (3.0f * large_pixel + large_spacing * large_pixel);
+    float vx = bx - victory_width / 2;
+    
+    build_text_3d(ecs,
+        {vx, by, bz},
+        large_pixel, large_spacing, victory_text,
+        {1.0f, 0.85f, 0.1f}, 3.0f, true);  // Bright gold, very high emissive
+    
+    // "SCORE N" - even larger digits
+    std::ostringstream oss;
+    oss << "SCORE " << g.score;
+    std::string score_text = oss.str();
+    float score_pixel = 1.2f;  // Extra large for score
+    float score_spacing = 1.5f;
+    float score_width = score_text.size() * (3.0f * score_pixel + score_spacing * score_pixel);
+    float sx = bx - score_width / 2;
+    
+    build_text_3d(ecs,
+        {sx, by - 7.0f, bz},
+        score_pixel, score_spacing, score_text,
+        {1.0f, 0.3f, 0.1f}, 3.0f, true);  // Bright red-orange, super high emissive
+    
+    // Add dramatic point lights behind the billboard
+    ecs.entity().child_of<hud>()
+        .set<Position>({bx, by - 2.0f, bz})
+        .set<PointLight>({{1.0f, 0.85f, 0.1f}, 8.0f});
+    
+    ecs.entity().child_of<hud>()
+        .set<Position>({bx, by - 6.0f, bz})
+        .set<PointLight>({{1.0f, 0.3f, 0.1f}, 10.0f});
+    
+    // Add a bright spotlight behind for dramatic effect
+    ecs.entity().child_of<hud>()
+        .set<Position>({bx, by + 3.0f, bz - 2.0f})
+        .set<PointLight>({{1.0f, 1.0f, 0.8f}, 5.0f});
+}
+
+// GameOver display
+void GameOverBillboard(flecs::iter& it, size_t, Game& g) {
+    if (!g.failed || g.billboard_created) {
+        return;
+    }
+    
+    flecs::world ecs = it.world();
+    g.billboard_created = true;
+    
+    float by = 12.0f;
+    float bx = g.center.x;
+    float bz = g.center.z;
+    
+    float large_pixel = 0.8f;
+    float large_spacing = 1.2f;
+    
+    // "GAME OVER" - large, red
+    std::string go_text = "GAME OVER";
+    float go_width = go_text.size() * (3.0f * large_pixel + large_spacing * large_pixel);
+    float gx = bx - go_width / 2;
+    
+    build_text_3d(ecs,
+        {gx, by, bz},
+        large_pixel, large_spacing, go_text,
+        {1.0f, 0.1f, 0.1f}, 3.0f, true);  // Red, high emissive
+    
+    // "SCORE N"
+    std::ostringstream oss;
+    oss << "SCORE " << g.score;
+    std::string score_text = oss.str();
+    float score_pixel = 1.0f;
+    float score_spacing = 1.5f;
+    float score_width = score_text.size() * (3.0f * score_pixel + score_spacing * score_pixel);
+    float sx = bx - score_width / 2;
+    
+    build_text_3d(ecs,
+        {sx, by - 6.0f, bz},
+        score_pixel, score_spacing, score_text,
+        {0.8f, 0.8f, 0.8f}, 3.0f, true);  // White-ish
+    
+    // Red point light
+    ecs.entity().child_of<hud>()
+        .set<Position>({bx, by - 2.0f, bz})
+        .set<PointLight>({{1.0f, 0.1f, 0.1f}, 6.0f});
 }
 
 void HitTarget(flecs::iter& it, size_t i, Position& p, Health& h, Box& b, 
@@ -909,7 +1231,6 @@ void HitTarget(flecs::iter& it, size_t i, Position& p, Health& h, Box& b,
     flecs::entity enemy = it.entity(i);
     float range = b.width / 2;
 
-    // Test whether bullet hit an enemy
     q.findn(p, range, qr);
     for (auto e : qr) {
         it.world().entity(e.id).destruct();
@@ -928,7 +1249,7 @@ void HitTarget(flecs::iter& it, size_t i, Position& p, Health& h, Box& b,
             explode(ecs, p, 0.6, 0.7, {0.5, 0.2, 0.5}, {0.8, 0.01, 0.8});
             enemy.set<Color>({0.1, 0.03, 0.0});
         }
-        hit_cooldown.value = HitCooldownInitialValue; // For color effect
+        hit_cooldown.value = HitCooldownInitialValue;
     }
 }
 
@@ -936,6 +1257,8 @@ void DestroyEnemy(flecs::entity e, Health& h, Position& p, Game& g) {
     flecs::world ecs = e.world();
     if (h.value <= 0) {
         g.enemies_alive = std::max(0, g.enemies_alive - 1);
+        g.score += 1;
+        std::cout << "Enemy destroyed! Score: " << g.score << std::endl;
         e.destruct();
         explode(ecs, p, 1.1, 1.0, {0.5, 0.2, 0.1}, {0.7, 0.1, 0.05});
         check_level_complete(ecs, g);
@@ -944,7 +1267,6 @@ void DestroyEnemy(flecs::entity e, Health& h, Position& p, Game& g) {
 
 void init_components(flecs::world& ecs) {
     ecs.component<Game>()
-        .member("window", &Game::window)
         .member("level", &Game::level)
         .member("center", &Game::center)
         .member("size", &Game::size)
@@ -953,8 +1275,10 @@ void init_components(flecs::world& ecs) {
         .member("enemies_to_spawn", &Game::enemies_to_spawn)
         .member("enemies_spawned", &Game::enemies_spawned)
         .member("enemies_alive", &Game::enemies_alive)
+        .member("score", &Game::score)
         .member("failed", &Game::failed)
-        .member("won", &Game::won);
+        .member("won", &Game::won)
+        .member("fireworks_timer", &Game::fireworks_timer);
 
     ecs.component<Enemy>();
     ecs.component<Laser>();
@@ -985,6 +1309,9 @@ void init_components(flecs::world& ecs) {
         .member("angle", &Target::angle)
         .member("distance", &Target::distance)
         .member("lock", &Target::lock);
+
+    ecs.component<ScoreDigit>();
+    ecs.component<Billboard>();
 }
 
 void init_game(flecs::world& ecs) {
@@ -993,12 +1320,16 @@ void init_game(flecs::world& ecs) {
 
     Game& g = ecs.ensure<Game>();
     g.current_level = 1;
-    g.max_level = 10;
+    g.max_level = 5;
     g.enemies_to_spawn = enemy_count_for_level(g.current_level);
     g.enemies_spawned = 0;
     g.enemies_alive = 0;
+    g.score = 0;
     g.failed = false;
     g.won = false;
+    g.fireworks_timer = 0;
+    g.billboard_created = false;
+    g.displayed_score = -1;
     g.center = { toX(TileCountX / 2), 0, toZ(TileCountZ / 2) };
     g.size = TileCountX * (TileSize + TileSpacing) + 2;
     std::cout << "Starting level " << g.current_level << " (" << g.enemies_to_spawn << " enemies)" << std::endl;
@@ -1017,6 +1348,7 @@ void init_game(flecs::world& ecs) {
     ecs.script().filename("etc/assets/spark.flecs").run();
     ecs.script().filename("etc/assets/ion.flecs").run();
     ecs.script().filename("etc/assets/bolt.flecs").run();
+    ecs.script().filename("etc/assets/firework.flecs").run();
     ecs.script().filename("etc/assets/enemy.flecs").run();
     ecs.script().filename("etc/assets/turret.flecs").run();
     ecs.script().filename("etc/assets/cannon.flecs").run();
@@ -1126,8 +1458,8 @@ void init_systems(flecs::world& ecs) {
     // Find target for turrets
     ecs.system<Turret, Target, Position, const SpatialQuery, SpatialQueryResult>
             ("FindTarget")
-        .term_at(3).up(flecs::IsA).second<Enemy>() // SpatialQuery(up, Enemy)
-        .term_at(4).second<Enemy>()                // (SpatialQueryResult, Enemy)
+        .term_at(3).up(flecs::IsA).second<Enemy>()
+        .term_at(4).second<Enemy>()
         .each(FindTarget);
 
     // Aim turret at enemies
@@ -1168,8 +1500,8 @@ void init_systems(flecs::world& ecs) {
     // Test for collisions with enemies
     ecs.system<Position, Health, Box, HitCooldown, const SpatialQuery, SpatialQueryResult>
             ("HitTarget")
-        .term_at(4).up(flecs::IsA).second<Bullet>() // SpatialQuery(up, Bullet)
-        .term_at(5).second<Bullet>()                // (SpatialQueryResult, Bullet)
+        .term_at(4).up(flecs::IsA).second<Bullet>()
+        .term_at(5).second<Bullet>()
         .each(HitTarget);
 
     // Destroy enemy when health goes to 0
@@ -1188,6 +1520,22 @@ void init_systems(flecs::world& ecs) {
                 p.intensity = l.intensity;
             }
         });
+
+    // Victory celebration: spawn fireworks when player wins
+    ecs.system<Game>("VictoryCelebration")
+        .each(VictoryCelebration);
+
+    // Score display: update HUD score when it changes
+    ecs.system<Game>("ScoreDisplay")
+        .each(ScoreDisplay);
+
+    // Victory billboard: create large 3D text billboard on win
+    ecs.system<Game>("VictoryBillboard")
+        .each(VictoryBillboard);
+
+    // Game Over billboard: create large 3D text billboard on loss
+    ecs.system<Game>("GameOverBillboard")
+        .each(GameOverBillboard);
     });
 }
 

@@ -1,0 +1,21 @@
+module tower_defense.prefabs
+using flecs.components.*
+
+const FireworkSize: 0.3
+const FireworkLifespan: 2.0
+const FireworkSizeDecay: 0.05
+const FireworkVelocityDecay: 0.04
+const FireworkColorDecay: 0.03
+
+prefab Firework : Particle {
+  Rgb: {1.0, 1.0, 0.5}
+  Emissive: {8.0}
+  Box: {$FireworkSize, $FireworkSize, $FireworkSize}
+
+  tower_defense.Particle: {
+    size_decay: $FireworkSizeDecay,
+    color_decay: $FireworkColorDecay,
+    velocity_decay: $FireworkVelocityDecay,
+    lifespan: $FireworkLifespan
+  }
+}
