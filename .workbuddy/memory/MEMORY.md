@@ -27,6 +27,7 @@
 - `Particle`, `ParticleLifespan`, `ExplosionLight`, `HitCooldown`, `Recoil`
 - `ScoreDigit` (tag): marks HUD score pixel entities for cleanup/update
 - `Billboard` (tag): marks billboard text entities
+- `CameraControl`: mouse-driven camera state (dragging, rotating, initial pos/rot, right_was_down)
 
 ## Key Systems
 - SpawnEnemy, MoveEnemy, DestroyEnemy (with scoring)
@@ -46,3 +47,15 @@
 
 ## Controls
 - B: Build cannon turret, L: Build laser turret, X/Delete: Remove turret
+- **Mouse drag**: Left drag to pan camera, Middle drag to orbit, Right click to reset
+
+## Camera Control
+- `CameraControl` component: stores dragging/rotating state, initial position/rotation, mouse delta
+- `CameraControlSystem`: mouse-driven camera (pan/orbit/reset)
+- Uses Win32 `GetAsyncKeyState` API for mouse button detection (more reliable than EcsInput)
+- Pan speed: 0.03, Orbit speed: 0.005, Vertical rotation clamped to ±1.2 radians
+
+## Critical Notes
+- **NEVER add C++ custom components in .flecs scripts** - Flecs script engine cannot parse them, causes runtime crash
+- Add custom components dynamically in C++ via `ecs.lookup("entity_name")` + `.add<Component>()`
+- `bake run` may fail with Sokol renderer errors (window context issue); direct exe run is reliable

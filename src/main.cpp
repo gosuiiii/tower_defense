@@ -7,6 +7,10 @@
 #include <string>
 #include <sstream>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 using namespace std;
 using namespace flecs::components;
 
@@ -348,9 +352,34 @@ struct ScoreDigit { };
 // Tag component for billboard text entities
 struct Billboard { };
 
+// Camera control component: custom mouse-driven camera
+struct CameraControl {
+    CameraControl() {
+        dragging = false;
+        rotating = false;
+        last_mouse_x = 0;
+        last_mouse_y = 0;
+        initialized = false;
+        right_was_down = false;
+    }
+
+    bool dragging;       // left mouse button held for panning
+    bool rotating;       // middle mouse button held for orbiting
+    float last_mouse_x;  // previous frame mouse position
+    float last_mouse_y;
+    bool initialized;    // whether initial position has been captured
+    bool right_was_down; // track right button for click detection
+
+    Position initial_position;  // camera starting position (for reset)
+    Rotation initial_rotation;  // camera starting rotation (for reset)
+};
+
 }
 
 using namespace tower_defense;
+
+// Shortcut to EcsInput for mouse access
+using MouseInput = input::Input;
 
 // Scope for level entities (tile, path)
 struct level { };
@@ -710,7 +739,7 @@ void MoveEnemy(flecs::iter& it, size_t i,
     const Level& lvl = g.level.get<Level>();
 
     if (find_path(p, d, lvl)) {
-        g.enemies_alive = std::max(0, g.enemies_alive - 1);
+        g.enemies_alive = (std::max)(0, g.enemies_alive - 1);
         g.failed = true;
         std::cout << "A monster escaped! Game over." << std::endl;
         it.entity(i).destruct();
@@ -1056,7 +1085,119 @@ static void spawn_firework(flecs::world& ecs, const Position& center) {
         .set<ExplosionLight>({1.5f, 0.8f});
 }
 
-// Victory celebration: spawn fireworks periodically
+// ============================================================
+// CameraControlSystem: custom mouse-driven camera
+// Left drag   = pan (move on XZ plane)
+// Middle drag = orbit (rotate camera around look-at point)
+// Right click = reset to initial position
+// 
+// Note: Sokol doesn't map middle mouse to EcsInput, so we use
+// Win32 API (GetAsyncKeyState) for middle button detection.
+// On non-Windows platforms, Shift+Left drag is used instead.
+// ============================================================
+
+static bool platform_middle_mouse_down() {
+#ifdef _WIN32
+    return (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+#else
+    return false;
+#endif
+}
+
+static void platform_get_cursor_pos(float* x, float* y) {
+#ifdef _WIN32
+    POINT pt;
+    GetCursorPos(&pt);
+    *x = (float)pt.x;
+    *y = (float)pt.y;
+#else
+    *x = 0; *y = 0;
+#endif
+}
+
+void CameraControlSystem(flecs::iter& it, size_t i,
+    CameraControl& cc, Position& pos, Rotation& rot)
+{
+    flecs::world ecs = it.world();
+
+    // Capture initial position on first run
+    if (!cc.initialized) {
+        cc.initial_position = pos;
+        cc.initial_rotation = rot;
+        cc.initialized = true;
+        // Initialize mouse position
+        platform_get_cursor_pos(&cc.last_mouse_x, &cc.last_mouse_y);
+    }
+
+    // Get current mouse position via platform API
+    float cur_mouse_x, cur_mouse_y;
+    platform_get_cursor_pos(&cur_mouse_x, &cur_mouse_y);
+
+    // Calculate mouse delta
+    float dx = cur_mouse_x - cc.last_mouse_x;
+    float dy = cur_mouse_y - cc.last_mouse_y;
+
+    bool middle_down = platform_middle_mouse_down();
+
+    // Get mouse buttons via platform API (more reliable than EcsInput for our needs)
+#ifdef _WIN32
+    bool left_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    bool right_down = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    bool shift_held = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+#else
+    bool left_down = false;
+    bool right_down = false;
+    bool shift_held = false;
+#endif
+
+    // --- Left mouse drag: PAN ---
+    if (left_down && !middle_down && !shift_held) {
+        if (!cc.dragging) {
+            cc.dragging = true;
+            // Don't apply delta on first frame of drag
+        } else {
+            float pan_speed = 0.03f;
+            float angle = rot.y;
+            
+            // Move in camera's local XZ plane
+            pos.x -= (cos(angle) * dx + sin(angle) * dy) * pan_speed;
+            pos.z -= (-sin(angle) * dx + cos(angle) * dy) * pan_speed;
+        }
+    } else {
+        cc.dragging = false;
+    }
+
+    // --- Middle mouse drag: ORBIT ---
+    // Use middle button on Windows, or Shift+Left as fallback
+    if (middle_down || (shift_held && left_down)) {
+        if (!cc.rotating) {
+            cc.rotating = true;
+            // Don't apply delta on first frame of orbit
+        } else {
+            float rotate_speed = 0.005f;
+            rot.y += dx * rotate_speed;
+            rot.x -= dy * rotate_speed;
+            
+            // Clamp vertical rotation
+            if (rot.x > 1.2f) rot.x = 1.2f;
+            if (rot.x < -1.2f) rot.x = -1.2f;
+        }
+    } else {
+        cc.rotating = false;
+    }
+
+    // --- Right mouse click: RESET ---
+    if (right_down && !cc.right_was_down) {
+        pos = cc.initial_position;
+        rot = cc.initial_rotation;
+        std::cout << "Camera reset to initial position." << std::endl;
+    }
+    cc.right_was_down = right_down;
+
+    // Store current mouse position for next frame delta
+    cc.last_mouse_x = cur_mouse_x;
+    cc.last_mouse_y = cur_mouse_y;
+}
 void VictoryCelebration(flecs::iter& it, size_t, Game& g) {
     if (!g.won) {
         return;
@@ -1256,7 +1397,7 @@ void HitTarget(flecs::iter& it, size_t i, Position& p, Health& h, Box& b,
 void DestroyEnemy(flecs::entity e, Health& h, Position& p, Game& g) {
     flecs::world ecs = e.world();
     if (h.value <= 0) {
-        g.enemies_alive = std::max(0, g.enemies_alive - 1);
+        g.enemies_alive = (std::max)(0, g.enemies_alive - 1);
         g.score += 1;
         std::cout << "Enemy destroyed! Score: " << g.score << std::endl;
         e.destruct();
@@ -1312,6 +1453,7 @@ void init_components(flecs::world& ecs) {
 
     ecs.component<ScoreDigit>();
     ecs.component<Billboard>();
+    ecs.component<CameraControl>();
 }
 
 void init_game(flecs::world& ecs) {
@@ -1336,6 +1478,13 @@ void init_game(flecs::world& ecs) {
 
     // Camera, lighting & canvas configuration
     ecs.script().filename("etc/assets/app.flecs").run();
+
+    // Add custom CameraControl component to the camera entity
+    // (must be done after app.flecs creates the camera)
+    flecs::entity camera_ent = ecs.lookup("camera");
+    if (camera_ent) {
+        camera_ent.add<CameraControl>();
+    }
 
     // Prefab assets
     ecs.script().filename("etc/assets/materials.flecs").run();
@@ -1445,6 +1594,11 @@ void init_systems(flecs::world& ecs) {
     // Turret build/delete controls (B: cannon, L: laser, X/Delete: remove)
     ecs.system<const Input, const Game>("TurretControl")
         .each(TurretControl);
+
+    // Custom mouse-driven camera control
+    // (Left drag: pan, Middle drag: orbit, Right click: reset)
+    ecs.system<CameraControl, Position, Rotation>("CameraControlSystem")
+        .each(CameraControlSystem);
 
     // Move enemies
     ecs.system<Position, Direction, Game>("MoveEnemy")
