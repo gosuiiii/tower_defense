@@ -3,11 +3,11 @@ using flecs.game
 
 camera {
   CameraController
-  Position3: {0, 14, -8}
-  Rotation3: {-0.67}
+  Position3: {0, 30, -5}
+  Rotation3: {-0.55}
   Camera: {
-    up: [0, 1, 0],
-    fov: 20,
+    up: [0, -1, 0],
+    fov: 30,
     near_: 1,
     far_: 500
   }

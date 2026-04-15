@@ -28,13 +28,20 @@
 - `ScoreDigit` (tag): marks HUD score pixel entities for cleanup/update
 - `Billboard` (tag): marks billboard text entities
 - `CameraControl`: mouse-driven camera state (dragging, rotating, initial pos/rot, right_was_down)
+- `HighlightState`: tracks mouse-hover highlighted entity (highlighted, original_emissive, original_color, had_emissive, had_color, had_scale, original_scale)
+- `BillboardAnim`: billboard scale-up animation (elapsed, duration, target size, delay, ease-out cubic)
+- `HealthBar`: links blood bar entity to enemy (enemy ref, max_width)
+- `HighlightState`: tracks mouse-hover highlighted entity (highlighted, original_emissive, original_color, had_emissive, had_color)
 
 ## Key Systems
-- SpawnEnemy, MoveEnemy, DestroyEnemy (with scoring)
+- SpawnEnemy, MoveEnemy, DestroyEnemy (with scoring + health bar cleanup)
 - TurretControl, FindTarget, AimTarget, FireAtTarget, BeamControl
 - ProgressParticle, HitTarget, UpdateExplosionLight
 - VictoryCelebration (fireworks on win), VictoryBillboard, GameOverBillboard
 - ScoreDisplay (3D pixel font score HUD, rebuilds only on score change)
+- BillboardAnimSystem (scale-up animation for billboards)
+- HealthBarSystem (follow enemy + scale with health)
+- HoverHighlightSystem (ray-based mouse hover highlight)
 
 ## 3D Pixel Font System
 - `build_text_3d()`: creates 3D box entities to form text characters
@@ -44,18 +51,25 @@
 - Flecs sokol renderer has NO 2D text rendering - must use 3D approach
 - Score HUD: gold color, high emissive, above map
 - Billboard: large pixels, very high emissive, centered above map
+- Animation support: anim_duration + anim_delay params for scale-up effect
 
 ## Controls
 - B: Build cannon turret, L: Build laser turret, X/Delete: Remove turret
-- **Mouse drag**: Left drag to pan camera, Middle drag to orbit, Right click to reset
+- **Mouse drag**: Left drag to pan camera (pull scene feel, drag right=scene moves right), Middle drag to orbit, Right click to reset
 
 ## Camera Control
 - `CameraControl` component: stores dragging/rotating state, initial position/rotation, mouse delta
 - `CameraControlSystem`: mouse-driven camera (pan/orbit/reset)
 - Uses Win32 `GetAsyncKeyState` API for mouse button detection (more reliable than EcsInput)
 - Pan speed: 0.03, Orbit speed: 0.005, Vertical rotation clamped to ±1.2 radians
+- Default position: {0, 30, -5}, rotation: {-0.55}, FOV: 30° — sees score billboard + most of map
 
 ## Critical Notes
 - **NEVER add C++ custom components in .flecs scripts** - Flecs script engine cannot parse them, causes runtime crash
 - Add custom components dynamically in C++ via `ecs.lookup("entity_name")` + `.add<Component>()`
+- `entity.get<T>()` returns `const T&` (not pointer), use `try_get<T>()` for pointer
+- `entity.get_mut<T>()` returns `T&` (not pointer), use `ensure<T>()` for mutable access
+- **Camera up vector must be [0, -1, 0] in Flecs Sokol** (Sokol flips X axis internally, so up is inverted)
+- **Sokol X-axis flip affects pan direction**: X uses `-=` for "pull scene" feel, Z uses `+=` (both flipped vs standard)
+- **Remove CameraController from camera entity** when using custom CameraControl - otherwise Flecs built-in system modifies Rotation via AngularVelocity causing camera flip
 - `bake run` may fail with Sokol renderer errors (window context issue); direct exe run is reliable

@@ -352,6 +352,59 @@ struct ScoreDigit { };
 // Tag component for billboard text entities
 struct Billboard { };
 
+// Billboard animation component: scales up from 0 over time
+struct BillboardAnim {
+    BillboardAnim() {
+        elapsed = 0;
+        duration = 1.5f;
+        target_width = 0;
+        target_height = 0;
+        target_depth = 0;
+        delay = 0;     // delay before animation starts (seconds)
+        started = false;
+    }
+
+    float elapsed;
+    float duration;      // animation duration in seconds
+    float target_width;  // target box size
+    float target_height;
+    float target_depth;
+    float delay;         // delay before starting
+    bool started;        // whether animation has started
+};
+
+// Health bar component: links a health bar entity to its enemy
+struct HealthBar {
+    HealthBar() {
+        enemy = flecs::entity::null();
+        max_width = 1.0f;
+    }
+
+    flecs::entity enemy;  // the enemy this bar belongs to
+    float max_width;       // full-width of the bar
+};
+
+// Highlight state component: tracks which entity is currently highlighted by mouse hover
+struct HighlightState {
+    HighlightState() {
+        highlighted = flecs::entity::null();
+        original_emissive = 0;
+        original_color = {0, 0, 0};
+        had_emissive = false;
+        had_color = false;
+        had_scale = false;
+        original_scale = {1, 1, 1};
+    }
+
+    flecs::entity highlighted;  // currently highlighted entity
+    float original_emissive;    // saved emissive value before highlight
+    Color original_color;       // saved color before highlight
+    bool had_emissive;          // whether entity originally had Emissive
+    bool had_color;             // whether entity originally had Color
+    bool had_scale;             // whether entity originally had Scale3
+    transform::Scale3 original_scale;  // saved scale before highlight
+};
+
 // Camera control component: custom mouse-driven camera
 struct CameraControl {
     CameraControl() {
@@ -464,6 +517,8 @@ static PixelGlyph char_to_glyph(char c) {
 // color: RGB color of the blocks
 // emissive_val: emissive intensity for glow
 // add_billboard: if true, add Billboard tag to entities
+// anim_duration: if > 0, add scale-up animation with this duration
+// anim_delay: delay before animation starts
 static std::vector<flecs::entity> build_text_3d(
     flecs::world& ecs,
     const Position& base_pos,
@@ -472,11 +527,15 @@ static std::vector<flecs::entity> build_text_3d(
     const std::string& text,
     const Color& color,
     float emissive_val = 1.0f,
-    bool add_billboard = false)
+    bool add_billboard = false,
+    float anim_duration = 0.0f,
+    float anim_delay = 0.0f)
 {
     std::vector<flecs::entity> entities;
     float advance = 3.0f * pixel_size + spacing * pixel_size;
     float cursor_x = base_pos.x;
+    float target_box = pixel_size * 0.9f;
+    bool use_anim = anim_duration > 0.0f;
     
     for (size_t ci = 0; ci < text.size(); ci++) {
         PixelGlyph g = char_to_glyph(text[ci]);
@@ -488,10 +547,26 @@ static std::vector<flecs::entity> build_text_3d(
                     float pz = base_pos.z;
                     
                     auto e = ecs.entity().child_of<hud>();
-                    e.set<Position>({px, py, pz})
-                     .set<Box>({pixel_size * 0.9f, pixel_size * 0.9f, pixel_size * 0.9f})
-                     .set<Color>(color)
-                     .set<Emissive>({emissive_val});
+                    
+                    if (use_anim) {
+                        // Start with nearly-zero size for animation
+                        BillboardAnim ba;
+                        ba.duration = anim_duration;
+                        ba.target_width = target_box;
+                        ba.target_height = target_box;
+                        ba.target_depth = target_box;
+                        ba.delay = anim_delay;
+                        e.set<Position>({px, py, pz})
+                         .set<Box>({0.01f, 0.01f, 0.01f})
+                         .set<Color>(color)
+                         .set<Emissive>({0.0f})
+                         .set<BillboardAnim>(ba);
+                    } else {
+                        e.set<Position>({px, py, pz})
+                         .set<Box>({target_box, target_box, target_box})
+                         .set<Color>(color)
+                         .set<Emissive>({emissive_val});
+                    }
                     
                     if (add_billboard) {
                         e.add<Billboard>();
@@ -726,11 +801,39 @@ void SpawnEnemy(flecs::iter& it, size_t, Game& g) {
     g.enemies_spawned += 1;
     g.enemies_alive += 1;
 
-    it.world().entity().child_of<enemies>().is_a<prefabs::Enemy>()
+    auto enemy_ent = it.world().entity().child_of<enemies>().is_a<prefabs::Enemy>()
         .set<Direction>({0})
         .set<Position>({
             lvl.spawn_point.x, 1.2, lvl.spawn_point.y
         });
+
+    // Create health bar above enemy (background + foreground)
+    float bar_width = 1.0f;
+    float bar_height = 0.08f;
+    float bar_depth = 0.08f;
+    float bar_y_offset = 1.0f;  // above enemy center
+
+    // Background bar (red)
+    HealthBar bg_hb;
+    bg_hb.enemy = enemy_ent;
+    bg_hb.max_width = bar_width;
+    auto bg_bar = it.world().entity().child_of<hud>()
+        .set<Position>({lvl.spawn_point.x, 1.2f + bar_y_offset, lvl.spawn_point.y})
+        .set<Box>({bar_width, bar_height, bar_depth})
+        .set<Color>({0.3f, 0.0f, 0.0f})
+        .set<Emissive>({1.0f})
+        .set<HealthBar>(bg_hb);
+
+    // Foreground bar (green)
+    HealthBar fg_hb;
+    fg_hb.enemy = enemy_ent;
+    fg_hb.max_width = bar_width;
+    auto fg_bar = it.world().entity().child_of<hud>()
+        .set<Position>({lvl.spawn_point.x, 1.2f + bar_y_offset, lvl.spawn_point.y})
+        .set<Box>({bar_width, bar_height, bar_depth})
+        .set<Color>({0.0f, 0.9f, 0.1f})
+        .set<Emissive>({2.0f})
+        .set<HealthBar>(fg_hb);
 }
 
 void MoveEnemy(flecs::iter& it, size_t i,
@@ -1151,17 +1254,17 @@ void CameraControlSystem(flecs::iter& it, size_t i,
 #endif
 
     // --- Left mouse drag: PAN ---
+    // "Pull the scene" feeling: drag right = scene moves right, drag down = scene moves down
+    // Note: Sokol flips X axis internally, Z direction also needs flip for "pull" feel
     if (left_down && !middle_down && !shift_held) {
         if (!cc.dragging) {
             cc.dragging = true;
-            // Don't apply delta on first frame of drag
         } else {
             float pan_speed = 0.03f;
             float angle = rot.y;
             
-            // Move in camera's local XZ plane
             pos.x -= (cos(angle) * dx + sin(angle) * dy) * pan_speed;
-            pos.z -= (-sin(angle) * dx + cos(angle) * dy) * pan_speed;
+            pos.z += (-sin(angle) * dx + cos(angle) * dy) * pan_speed;
         }
     } else {
         cc.dragging = false;
@@ -1198,6 +1301,48 @@ void CameraControlSystem(flecs::iter& it, size_t i,
     cc.last_mouse_x = cur_mouse_x;
     cc.last_mouse_y = cur_mouse_y;
 }
+
+// ============================================================
+// BillboardAnimSystem: animate billboard text scaling in
+// ============================================================
+void BillboardAnimSystem(flecs::iter& it, size_t i,
+    BillboardAnim& anim, Box& box, Emissive& em)
+{
+    // Handle delay
+    if (!anim.started) {
+        anim.delay -= it.delta_time();
+        if (anim.delay <= 0) {
+            anim.started = true;
+        } else {
+            return;  // Still in delay period
+        }
+    }
+
+    anim.elapsed += it.delta_time();
+    float t = anim.elapsed / anim.duration;
+    if (t > 1.0f) t = 1.0f;
+
+    // Ease-out cubic for smooth deceleration
+    float eased = 1.0f - pow(1.0f - t, 3);
+
+    box.width  = anim.target_width  * eased;
+    box.height = anim.target_height * eased;
+    box.depth  = anim.target_depth  * eased;
+
+    // Fade in emissive from 0 to target
+    if (t < 1.0f) {
+        em.value *= eased;
+    }
+
+    // Animation complete - remove the anim component
+    if (t >= 1.0f) {
+        box.width  = anim.target_width;
+        box.height = anim.target_height;
+        box.depth  = anim.target_depth;
+        it.entity(i).remove<BillboardAnim>();
+    }
+}
+
 void VictoryCelebration(flecs::iter& it, size_t, Game& g) {
     if (!g.won) {
         return;
@@ -1228,9 +1373,9 @@ void ScoreDisplay(flecs::iter& it, size_t, Game& g) {
         e.destruct();
     });
     
-    // Score display position: above the map, offset to the left
+    // Score display position: above the map, centered
     float score_y = 14.0f;
-    float score_x = g.center.x - 10.0f;
+    float score_x = g.center.x - 3.0f;  // Slightly left of center for visual balance
     float score_z = g.center.z;
     
     // Format score text
@@ -1288,9 +1433,9 @@ void VictoryBillboard(flecs::iter& it, size_t, Game& g) {
     build_text_3d(ecs,
         {vx, by, bz},
         large_pixel, large_spacing, victory_text,
-        {1.0f, 0.85f, 0.1f}, 3.0f, true);  // Bright gold, very high emissive
+        {1.0f, 0.85f, 0.1f}, 3.0f, true, 1.5f, 0.0f);  // 1.5s scale-up animation
     
-    // "SCORE N" - even larger digits
+    // "SCORE N" - even larger digits (delayed animation)
     std::ostringstream oss;
     oss << "SCORE " << g.score;
     std::string score_text = oss.str();
@@ -1302,7 +1447,7 @@ void VictoryBillboard(flecs::iter& it, size_t, Game& g) {
     build_text_3d(ecs,
         {sx, by - 7.0f, bz},
         score_pixel, score_spacing, score_text,
-        {1.0f, 0.3f, 0.1f}, 3.0f, true);  // Bright red-orange, super high emissive
+        {1.0f, 0.3f, 0.1f}, 3.0f, true, 1.2f, 0.8f);  // 1.2s animation, 0.8s delay
     
     // Add dramatic point lights behind the billboard
     ecs.entity().child_of<hud>()
@@ -1343,9 +1488,9 @@ void GameOverBillboard(flecs::iter& it, size_t, Game& g) {
     build_text_3d(ecs,
         {gx, by, bz},
         large_pixel, large_spacing, go_text,
-        {1.0f, 0.1f, 0.1f}, 3.0f, true);  // Red, high emissive
+        {1.0f, 0.1f, 0.1f}, 3.0f, true, 1.5f, 0.0f);  // 1.5s scale-up animation
     
-    // "SCORE N"
+    // "SCORE N" (delayed)
     std::ostringstream oss;
     oss << "SCORE " << g.score;
     std::string score_text = oss.str();
@@ -1357,7 +1502,7 @@ void GameOverBillboard(flecs::iter& it, size_t, Game& g) {
     build_text_3d(ecs,
         {sx, by - 6.0f, bz},
         score_pixel, score_spacing, score_text,
-        {0.8f, 0.8f, 0.8f}, 3.0f, true);  // White-ish
+        {0.8f, 0.8f, 0.8f}, 3.0f, true, 1.2f, 0.8f);  // 1.2s animation, 0.8s delay
     
     // Red point light
     ecs.entity().child_of<hud>()
@@ -1400,11 +1545,263 @@ void DestroyEnemy(flecs::entity e, Health& h, Position& p, Game& g) {
         g.enemies_alive = (std::max)(0, g.enemies_alive - 1);
         g.score += 1;
         std::cout << "Enemy destroyed! Score: " << g.score << std::endl;
+
+        // Destroy associated health bars
+        ecs.each([&](flecs::entity hb_ent, const HealthBar& hb) {
+            if (hb.enemy == e) {
+                hb_ent.destruct();
+            }
+        });
+
         e.destruct();
         explode(ecs, p, 1.1, 1.0, {0.5, 0.2, 0.1}, {0.7, 0.1, 0.05});
         check_level_complete(ecs, g);
     }
 }
+
+// ============================================================
+// HealthBarSystem: update health bar position & size to follow enemy
+// ============================================================
+void HealthBarSystem(flecs::iter& it, size_t i,
+    HealthBar& hb, Position& pos, Box& box)
+{
+    if (!hb.enemy.is_alive()) {
+        // Enemy was destroyed, clean up health bar
+        it.entity(i).destruct();
+        return;
+    }
+
+    // Get enemy position
+    const Position* ep = hb.enemy.try_get<Position>();
+    if (!ep) {
+        it.entity(i).destruct();
+        return;
+    }
+
+    // Get enemy health
+    const Health* eh = hb.enemy.try_get<Health>();
+    if (!eh) {
+        it.entity(i).destruct();
+        return;
+    }
+
+    float health_ratio = eh->value;
+    if (health_ratio < 0) health_ratio = 0;
+    if (health_ratio > 1) health_ratio = 1;
+
+    // Position bar above enemy
+    float bar_y_offset = 1.0f;
+    pos.x = ep->x;
+    pos.y = ep->y + bar_y_offset;
+    pos.z = ep->z;
+
+    // Scale foreground bar width based on health
+    box.width = hb.max_width * health_ratio;
+
+    // Adjust x position to left-align the bar (shrink from right)
+    float offset = (hb.max_width - box.width) / 2.0f;
+    pos.x = ep->x + offset;
+}
+
+// ============================================================
+// HoverHighlightSystem: highlight enemy/turret under mouse cursor
+// Uses raycasting from camera through mouse position
+// ============================================================
+void HoverHighlightSystem(flecs::iter& it, size_t, Game& g) {
+    flecs::world ecs = it.world();
+
+    // Get the singleton HighlightState
+    HighlightState& hs = ecs.ensure<HighlightState>();
+
+    // Restore previously highlighted entity's color, emissive, and scale
+    if (hs.highlighted.is_alive()) {
+        if (hs.had_color && hs.highlighted.has<Color>()) {
+            Color& c = hs.highlighted.ensure<Color>();
+            c = hs.original_color;
+        } else if (!hs.had_color && hs.highlighted.has<Color>()) {
+            hs.highlighted.remove<Color>();
+        }
+        if (hs.had_emissive && hs.highlighted.has<Emissive>()) {
+            Emissive& em = hs.highlighted.ensure<Emissive>();
+            em.value = hs.original_emissive;
+        } else if (!hs.had_emissive && hs.highlighted.has<Emissive>()) {
+            hs.highlighted.remove<Emissive>();
+        }
+        // Restore scale
+        if (hs.had_scale && hs.highlighted.has<transform::Scale3>()) {
+            transform::Scale3& s = hs.highlighted.ensure<transform::Scale3>();
+            s = hs.original_scale;
+        } else if (!hs.had_scale && hs.highlighted.has<transform::Scale3>()) {
+            hs.highlighted.remove<transform::Scale3>();
+        }
+        hs.highlighted = flecs::entity::null();
+    }
+
+    // Don't highlight if game is over
+    if (g.failed || g.won) return;
+
+    // Don't highlight if mouse is being dragged
+#ifdef _WIN32
+    bool left_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    bool middle_down = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+    if (left_down || middle_down) return;
+#endif
+
+    // Find camera entity
+    flecs::entity camera_ent = ecs.lookup("camera");
+    if (!camera_ent) return;
+    const Position* cam_pos_ptr = camera_ent.try_get<Position>();
+    const Rotation* cam_rot_ptr = camera_ent.try_get<Rotation>();
+    if (!cam_pos_ptr || !cam_rot_ptr) return;
+    const Position& cam_pos = *cam_pos_ptr;
+    const Rotation& cam_rot = *cam_rot_ptr;
+
+    // Get mouse screen position
+    float mouse_x = 0, mouse_y = 0;
+    platform_get_cursor_pos(&mouse_x, &mouse_y);
+
+    // Get window dimensions
+    // Use Sokol's window size if possible, otherwise approximate
+    float screen_w = 1400.0f;
+    float screen_h = 1000.0f;
+
+#ifdef _WIN32
+    // Try to get actual window rect
+    HWND hwnd = GetActiveWindow();
+    if (hwnd) {
+        RECT rect;
+        if (GetClientRect(hwnd, &rect)) {
+            screen_w = (float)(rect.right - rect.left);
+            screen_h = (float)(rect.bottom - rect.top);
+        }
+    }
+#endif
+
+    // Convert mouse position to normalized device coordinates (-1 to 1)
+    float ndc_x = (2.0f * mouse_x / screen_w) - 1.0f;
+    float ndc_y = 1.0f - (2.0f * mouse_y / screen_h);
+
+    // Simple raycasting: construct a ray from camera through mouse point
+    float yaw = cam_rot.y;
+    float pitch = -cam_rot.x;  // negative because camera looks down
+
+    // Camera forward direction
+    float fwd_x = sin(yaw) * cos(pitch);
+    float fwd_y = sin(pitch);
+    float fwd_z = cos(yaw) * cos(pitch);
+
+    // Camera right and up vectors
+    float right_x = cos(yaw);
+    float right_z = -sin(yaw);
+
+    // FOV-based ray spread factor
+    float fov_rad = 30.0f * (3.14159f / 180.0f);  // 30 degrees (matches camera FOV)
+    float aspect = screen_w / screen_h;
+    float spread_h = tan(fov_rad / 2.0f) * ndc_x * aspect;
+    float spread_v = tan(fov_rad / 2.0f) * ndc_y;
+
+    // Ray direction
+    float dir_x = fwd_x + right_x * spread_h + 0 * spread_v;
+    float dir_y = fwd_y + 0 * spread_h + 1.0f * spread_v;
+    float dir_z = fwd_z + right_z * spread_h + 0 * spread_v;
+
+    // Normalize
+    float len = sqrt(dir_x * dir_x + dir_y * dir_y + dir_z * dir_z);
+    if (len < 0.001f) return;
+    dir_x /= len; dir_y /= len; dir_z /= len;
+
+    // Find closest enemy/turret intersecting the ray
+    flecs::entity closest = flecs::entity::null();
+    float closest_dist = 999.0f;
+
+    // Check enemies with larger hit radius
+    ecs.each([&](flecs::entity e, const Position& p, const Health&, const Enemy&) {
+        float vx = p.x - cam_pos.x;
+        float vy = p.y - cam_pos.y;
+        float vz = p.z - cam_pos.z;
+
+        float dot = vx * dir_x + vy * dir_y + vz * dir_z;
+        if (dot < 0) return;  // Behind camera
+
+        float cx = cam_pos.x + dir_x * dot;
+        float cy = cam_pos.y + dir_y * dot;
+        float cz = cam_pos.z + dir_z * dot;
+
+        float ddx = p.x - cx;
+        float ddy = p.y - cy;
+        float ddz = p.z - cz;
+        float dist = sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+
+        // Larger hit radius for easier selection (2.5 units)
+        if (dist < 2.5f && dot < closest_dist) {
+            closest_dist = dot;
+            closest = e;
+        }
+    });
+
+    // Check turrets with larger hit radius
+    ecs.each([&](flecs::entity e, const Position& p, const Turret&) {
+        float vx = p.x - cam_pos.x;
+        float vy = p.y - cam_pos.y;
+        float vz = p.z - cam_pos.z;
+
+        float dot = vx * dir_x + vy * dir_y + vz * dir_z;
+        if (dot < 0) return;
+
+        float cx = cam_pos.x + dir_x * dot;
+        float cy = cam_pos.y + dir_y * dot;
+        float cz = cam_pos.z + dir_z * dot;
+
+        float ddx = p.x - cx;
+        float ddy = p.y - cy;
+        float ddz = p.z - cz;
+        float dist = sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+
+        if (dist < 2.5f && dot < closest_dist) {
+            closest_dist = dot;
+            closest = e;
+        }
+    });
+
+    // Apply highlight: bright white-yellow with very strong emissive glow
+    if (closest) {
+        hs.highlighted = closest;
+
+        // Save and override Color
+        if (closest.has<Color>()) {
+            hs.had_color = true;
+            hs.original_color = closest.get<Color>();
+        } else {
+            hs.had_color = false;
+        }
+        Color& c = closest.ensure<Color>();
+        c = {1.0f, 1.0f, 0.5f};  // Bright yellow-white
+
+        // Save and override Emissive
+        if (closest.has<Emissive>()) {
+            hs.had_emissive = true;
+            hs.original_emissive = closest.get<Emissive>().value;
+        } else {
+            hs.had_emissive = false;
+        }
+        Emissive& em = closest.ensure<Emissive>();
+        em.value = 15.0f;  // Very strong glow for visibility
+
+        // Save and override Scale3 - scale up for a "pop" effect
+        if (closest.has<transform::Scale3>()) {
+            hs.had_scale = true;
+            hs.original_scale = closest.get<transform::Scale3>();
+        } else {
+            hs.had_scale = false;
+        }
+        transform::Scale3& s = closest.ensure<transform::Scale3>();
+        s = {1.3f, 1.3f, 1.3f};  // 30% larger for obvious highlight
+    }
+}
+
+
+
+
 
 void init_components(flecs::world& ecs) {
     ecs.component<Game>()
@@ -1453,6 +1850,23 @@ void init_components(flecs::world& ecs) {
 
     ecs.component<ScoreDigit>();
     ecs.component<Billboard>();
+    ecs.component<BillboardAnim>()
+        .member("elapsed", &BillboardAnim::elapsed)
+        .member("duration", &BillboardAnim::duration)
+        .member("target_width", &BillboardAnim::target_width)
+        .member("target_height", &BillboardAnim::target_height)
+        .member("target_depth", &BillboardAnim::target_depth)
+        .member("delay", &BillboardAnim::delay)
+        .member("started", &BillboardAnim::started);
+    ecs.component<HealthBar>()
+        .member("enemy", &HealthBar::enemy)
+        .member("max_width", &HealthBar::max_width);
+    ecs.component<HighlightState>()
+        .member("highlighted", &HighlightState::highlighted)
+        .member("original_emissive", &HighlightState::original_emissive)
+        .member("original_color", &HighlightState::original_color)
+        .member("had_emissive", &HighlightState::had_emissive)
+        .member("had_color", &HighlightState::had_color);
     ecs.component<CameraControl>();
 }
 
@@ -1472,6 +1886,12 @@ void init_game(flecs::world& ecs) {
     g.fireworks_timer = 0;
     g.billboard_created = false;
     g.displayed_score = -1;
+
+    // Create HighlightState singleton
+    ecs.component<HighlightState>().add(flecs::Singleton);
+    HighlightState& hs = ecs.ensure<HighlightState>();
+    hs.highlighted = flecs::entity::null();
+    hs.original_emissive = 0;
     g.center = { toX(TileCountX / 2), 0, toZ(TileCountZ / 2) };
     g.size = TileCountX * (TileSize + TileSpacing) + 2;
     std::cout << "Starting level " << g.current_level << " (" << g.enemies_to_spawn << " enemies)" << std::endl;
@@ -1483,6 +1903,22 @@ void init_game(flecs::world& ecs) {
     // (must be done after app.flecs creates the camera)
     flecs::entity camera_ent = ecs.lookup("camera");
     if (camera_ent) {
+        // Remove Flecs built-in CameraController to prevent it from
+        // overriding our custom CameraControl (it modifies Rotation via
+        // AngularVelocity even after we zero it, causing camera flip)
+        flecs::entity cc = ecs.lookup("flecs.game.CameraController");
+        if (cc) {
+            camera_ent.remove(cc);
+        }
+        // Also remove any residual velocity/angular velocity
+        if (camera_ent.has<Velocity>()) {
+            auto& vel = camera_ent.ensure<Velocity>();
+            vel.x = 0; vel.y = 0; vel.z = 0;
+        }
+        if (camera_ent.has<physics::AngularVelocity>()) {
+            auto& av = camera_ent.ensure<physics::AngularVelocity>();
+            av.x = 0; av.y = 0; av.z = 0;
+        }
         camera_ent.add<CameraControl>();
     }
 
@@ -1600,6 +2036,20 @@ void init_systems(flecs::world& ecs) {
     ecs.system<CameraControl, Position, Rotation>("CameraControlSystem")
         .each(CameraControlSystem);
 
+    // Suppress keyboard-driven camera movement from CameraControllerAccelerate
+    // by zeroing out velocity/angular velocity each frame
+    ecs.system<Velocity>("SuppressCameraVelocity")
+        .with<CameraControl>()
+        .each([](flecs::entity e, Velocity& vel) {
+            vel.x = 0; vel.y = 0; vel.z = 0;
+        });
+
+    ecs.system<physics::AngularVelocity>("SuppressCameraAngularVelocity")
+        .with<CameraControl>()
+        .each([](flecs::entity e, physics::AngularVelocity& av) {
+            av.x = 0; av.y = 0; av.z = 0;
+        });
+
     // Move enemies
     ecs.system<Position, Direction, Game>("MoveEnemy")
         .with<Enemy>()
@@ -1690,6 +2140,18 @@ void init_systems(flecs::world& ecs) {
     // Game Over billboard: create large 3D text billboard on loss
     ecs.system<Game>("GameOverBillboard")
         .each(GameOverBillboard);
+
+    // Billboard scale-up animation
+    ecs.system<BillboardAnim, Box, Emissive>("BillboardAnimSystem")
+        .each(BillboardAnimSystem);
+
+    // Health bar: follow enemy position and scale with health
+    ecs.system<HealthBar, Position, Box>("HealthBarSystem")
+        .each(HealthBarSystem);
+
+    // Mouse hover highlight: highlight enemy/turret under cursor
+    ecs.system<Game>("HoverHighlightSystem")
+        .each(HoverHighlightSystem);
     });
 }
 
