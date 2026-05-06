@@ -73,7 +73,9 @@ static const transform::Position2 dir[] = {
     {0, 1},
 };
 
-// Level builder utilities
+/**
+ * @brief 二维网格模板类，用于存储关卡地图数据（TileKind）
+ */
 template <typename T>
 class grid {
 public:
@@ -112,6 +114,9 @@ enum class TileKind {
     Other
 };
 
+/**
+ * @brief 路径点构建器，将一系列路径点转换为网格中的 Path 标记
+ */
 struct Waypoints {
     Waypoints(grid<TileKind> *g, initializer_list<Waypoint> pts) : tiles(g) {
         for (const auto& p : pts)
@@ -153,6 +158,9 @@ namespace tower_defense {
 struct ScoreDigit;
 struct Billboard;
 
+/**
+ * @brief 全局游戏状态组件（Singleton），管理关卡、计分、胜负
+ */
 struct Game {
     Game() {
         level = flecs::entity::null();
@@ -189,10 +197,17 @@ struct Game {
     int displayed_score;  // Track what score is currently displayed
 };
 
+/**
+ * @brief 根据关卡编号计算该关卡的敌人数
+ */
 static int enemy_count_for_level(int level) {
     return 5 + (level - 1) * 2;
 }
 
+/**
+ * @brief 检查关卡是否完成（所有敌人已生成并全部消灭）
+ *        若通过则进入下一关，若通关则标记胜利
+ */
 static void check_level_complete(flecs::world& ecs, Game& g) {
     if (g.failed || g.won) {
         return;
@@ -214,6 +229,9 @@ static void check_level_complete(flecs::world& ecs, Game& g) {
     }
 }
 
+/**
+ * @brief 关卡数据组件：存储地图网格和敌人出生点
+ */
 struct Level {
     Level() {
         map = nullptr;
@@ -228,6 +246,9 @@ struct Level {
     transform::Position2 spawn_point;  
 };
 
+/**
+ * @brief 粒子系统共享参数组件（通过 Inherit 被实例粒子继承）
+ */
 struct Particle {
     float size_decay;
     float color_decay;
@@ -235,6 +256,9 @@ struct Particle {
     float lifespan;
 };
 
+/**
+ * @brief 粒子实例生命周期计时组件
+ */
 struct ParticleLifespan {
     ParticleLifespan() {
         t = 0;
@@ -242,17 +266,23 @@ struct ParticleLifespan {
     float t;
 };
 
+/**
+ * @brief 爆炸点光源组件（强度随时间衰减）
+ */
 struct ExplosionLight {
     float intensity;
     float decay;
 };
 
+/** @brief 标记组件：标识敌人实体 */
 struct Enemy { };
 
+/** @brief 敌人的行走方向索引（0-3，对应 dir 数组） */
 struct Direction {
     int value;
 };
 
+/** @brief 敌人生命值（范围 0-1） */
 struct Health {
     Health() {
         value = 1.0;
@@ -260,8 +290,12 @@ struct Health {
     float value;
 };
 
+/** @brief 标记组件：标识子弹实体 */
 struct Bullet { };
 
+/**
+ * @brief 炮塔组件：射击间隔、冷却计时、左右炮管交替
+ */
 struct Turret { 
     Turret(float fire_interval_arg = 1.0) {
         lr = 1;
@@ -274,16 +308,22 @@ struct Turret {
     int lr;
 };
 
+/** @brief 炮管后坐力组件（用于动画） */
 struct Recoil {
     float value;
 };
 
+/** @brief 命中冷却组件（防止单帧多次伤害） */
 struct HitCooldown {
     float value;
 };
 
+/** @brief 标记组件：标识激光炮塔 */
 struct Laser { };
 
+/**
+ * @brief 炮塔瞄准目标状态组件
+ */
 struct Target {
     Target() {
         prev_position[0] = 0;
@@ -346,13 +386,15 @@ namespace prefabs {
     };
 }
 
-// Tag component for score digit entities (used for cleanup)
+/** @brief 标记组件：用于标识分数数字实体（方便清理） */
 struct ScoreDigit { };
 
-// Tag component for billboard text entities
+/** @brief 标记组件：用于标识公告板文本实体 */
 struct Billboard { };
 
-// Billboard animation component: scales up from 0 over time
+/**
+ * @brief 公告板缩放动画组件：从零开始放大至目标尺寸
+ */
 struct BillboardAnim {
     BillboardAnim() {
         elapsed = 0;
@@ -373,7 +415,9 @@ struct BillboardAnim {
     bool started;        // whether animation has started
 };
 
-// Health bar component: links a health bar entity to its enemy
+/**
+ * @brief 血条组件：将血条实体关联到敌人，并记录满血时的宽度
+ */
 struct HealthBar {
     HealthBar() {
         enemy = flecs::entity::null();
@@ -384,7 +428,9 @@ struct HealthBar {
     float max_width;       // full-width of the bar
 };
 
-// Highlight state component: tracks which entity is currently highlighted by mouse hover
+/**
+ * @brief 鼠标悬浮高亮状态组件（Singleton）：保存被高亮实体的原始属性以便恢复
+ */
 struct HighlightState {
     HighlightState() {
         highlighted = flecs::entity::null();
@@ -405,7 +451,10 @@ struct HighlightState {
     transform::Scale3 original_scale;  // saved scale before highlight
 };
 
-// Camera control component: custom mouse-driven camera
+/**
+ * @brief 自定义鼠标驱动摄像机控制组件
+ *        左键拖拽 = 平移，中键拖拽 = 环绕，右键单击 = 重置
+ */
 struct CameraControl {
     CameraControl() {
         dragging = false;
@@ -449,7 +498,9 @@ struct particles { };
 // Scope for HUD elements (score display)
 struct hud { };
 
-// Utility functions
+/**
+ * @brief 生成 [0, scale) 范围内的随机浮点数
+ */
 float randf(float scale) {
     return ((float)rand() / (float)RAND_MAX) * scale;
 }
@@ -475,6 +526,9 @@ static const PixelGlyph digit_glyphs[10] = {
     {7,5,7,1,7}, // 9
 };
 
+/**
+ * @brief 将 ASCII 字符转换为像素字形（5行 x 3列位图）
+ */
 static PixelGlyph char_to_glyph(char c) {
     switch(c) {
         case 'A': return {7,5,7,5,5};
@@ -510,15 +564,19 @@ static PixelGlyph char_to_glyph(char c) {
     }
 }
 
-// Build a string of glyphs using 3D boxes. Returns the created entities.
-// base_pos: world position of the top-left pixel of the first glyph
-// pixel_size: size of each "pixel" block
-// spacing: horizontal gap between glyphs (in pixel_size units)
-// color: RGB color of the blocks
-// emissive_val: emissive intensity for glow
-// add_billboard: if true, add Billboard tag to entities
-// anim_duration: if > 0, add scale-up animation with this duration
-// anim_delay: delay before animation starts
+/**
+ * @brief 使用 3D 方块构建文本字符串，返回所有方块实体的列表
+ * @param ecs           ECS 世界
+ * @param base_pos      首个字符左上角像素的世界位置
+ * @param pixel_size    每个像素块的大小
+ * @param spacing       字符间的水平间距（像素块单位）
+ * @param text          要显示的文本
+ * @param color         方块颜色
+ * @param emissive_val  自发光强度
+ * @param add_billboard 是否添加 Billboard 标记
+ * @param anim_duration 缩放动画时长（>0 启用动画）
+ * @param anim_delay    动画启动延迟
+ */
 static std::vector<flecs::entity> build_text_3d(
     flecs::world& ecs,
     const Position& base_pos,
@@ -582,34 +640,58 @@ static std::vector<flecs::entity> build_text_3d(
     return entities;
 }
 
+/**
+ * @brief 将网格坐标转换为世界坐标
+ */
 float to_coord(float x) {
     return x * (TileSpacing + TileSize) - (TileSize / 2.0);
 }
 
+/**
+ * @brief 将世界坐标转换回网格坐标
+ */
 float from_coord(float x) {
     return (x + (TileSize / 2.0)) / (TileSpacing + TileSize);
 }
 
+/**
+ * @brief 将网格 X 坐标转换为世界 X 坐标（居中偏移）
+ */
 float toX(float x) {
     return to_coord(x + 0.5) - to_coord((TileCountX / 2.0));
 }
 
+/**
+ * @brief 将网格 Z 坐标转换为世界 Z 坐标
+ */
 float toZ(float z) {
     return to_coord(z);
 }
 
+/**
+ * @brief 将世界 X 坐标转换回网格 X 坐标
+ */
 float from_x(float x) {
     return from_coord(x + to_coord((TileCountX / 2.0))) - 0.5;
 }
 
+/**
+ * @brief 将世界 Z 坐标转换回网格 Z 坐标
+ */
 float from_z(float z) {
     return from_coord(z);
 }
 
+/**
+ * @brief 将角度归一化到 [0, 2*PI) 范围
+ */
 float angle_normalize(float angle) {
     return angle - floor(angle / ECS_PI_2) * ECS_PI_2;
 }
 
+/**
+ * @brief 计算从 eye 看向 dest 的水平偏航角（弧度）
+ */
 float look_at(vec3 eye, vec3 dest) {
     vec3 diff;
     
@@ -629,6 +711,9 @@ float look_at(vec3 eye, vec3 dest) {
     return angle_normalize(r + GLM_PI);
 }
 
+/**
+ * @brief 将当前角度平滑旋转到目标角度，步长为 increment
+ */
 float rotate_to(float cur, float target, float increment) {
     cur = angle_normalize(cur);
     target = angle_normalize(target);
@@ -654,7 +739,10 @@ float rotate_to(float cur, float target, float increment) {
     return cur;
 }
 
-// Check if enemy needs to change direction
+/**
+ * @brief 检查敌人是否需要转向：到达路径交叉点时根据 Path 标记决定方向
+ * @return true 表示无路可走（到达终点），false 表示继续前进
+ */
 bool find_path(Position& p, Direction& d, const Level& lvl) {
     float t_x = from_x(p.x);
     float t_y = from_z(p.z);
@@ -690,6 +778,9 @@ bool find_path(Position& p, Direction& d, const Level& lvl) {
     return false;
 }
 
+/**
+ * @brief 检查指定网格位置是否已有炮塔
+ */
 static bool turret_at_tile(flecs::world& ecs, float x, float z) {
     bool found = false;
     ecs.each([&](flecs::entity e, const Position& p, const Turret&) {
@@ -700,6 +791,9 @@ static bool turret_at_tile(flecs::world& ecs, float x, float z) {
     return found;
 }
 
+/**
+ * @brief 移除指定位置的树（随机障碍物）
+ */
 static void remove_tree_at(flecs::world& ecs, float x, float z) {
     ecs.each([&](flecs::entity e, const Position& p) {
         if (fabs(p.x - x) < 0.1f && fabs(p.z - z) < 0.1f) {
@@ -710,6 +804,11 @@ static void remove_tree_at(flecs::world& ecs, float x, float z) {
     });
 }
 
+/**
+ * @brief 尝试在随机可用炮塔位置建造一门炮塔
+ * @param laser 是否建造激光炮塔（false 则为加农炮）
+ * @return 是否成功建造
+ */
 static bool try_build_turret(flecs::world& ecs, const Level& lvl, bool laser) {
     std::vector<transform::Position2> candidates;
 
@@ -747,6 +846,9 @@ static bool try_build_turret(flecs::world& ecs, const Level& lvl, bool laser) {
     return true;
 }
 
+/**
+ * @brief 尝试删除第一座炮塔
+ */
 static bool try_delete_turret(flecs::world& ecs) {
     bool deleted = false;
     ecs.each([&](flecs::entity e, const Position& p, const Turret&) {
@@ -758,6 +860,9 @@ static bool try_delete_turret(flecs::world& ecs) {
     return deleted;
 }
 
+/**
+ * @brief 塔防控制系统：按 B 建造加农炮、L 建造激光炮、X/Delete 删除炮塔
+ */
 void TurretControl(flecs::iter& it, size_t, const Input& input, const Game& g) {
     if (g.failed || g.won) {
         return;
@@ -788,6 +893,9 @@ void TurretControl(flecs::iter& it, size_t, const Input& input, const Game& g) {
     }
 }
 
+/**
+ * @brief 生成敌人系统：按间隔生成敌人，并创建血条（红色背景 + 绿色前景）
+ */
 void SpawnEnemy(flecs::iter& it, size_t, Game& g) {
     if (g.failed || g.won) {
         return;
@@ -836,6 +944,9 @@ void SpawnEnemy(flecs::iter& it, size_t, Game& g) {
         .set<HealthBar>(fg_hb);
 }
 
+/**
+ * @brief 移动敌人系统：沿路径前进，到达终点则标记游戏失败
+ */
 void MoveEnemy(flecs::iter& it, size_t i,
     Position& p, Direction& d, Game& g)
 {
@@ -852,6 +963,9 @@ void MoveEnemy(flecs::iter& it, size_t i,
     }
 }
 
+/**
+ * @brief 清除炮塔的无效目标（目标已死亡或超出射程）
+ */
 void ClearTarget(Target& target, Position& p) {
     flecs::entity t = target.target;
     if (t) {
@@ -869,6 +983,9 @@ void ClearTarget(Target& target, Position& p) {
     }
 }
 
+/**
+ * @brief 炮塔搜寻最近敌人作为目标（使用空间查询）
+ */
 void FindTarget(flecs::iter& it, size_t i, Turret& turret, Target& target, 
     Position& p, const SpatialQuery& q, SpatialQueryResult& qr) 
 {
@@ -898,6 +1015,9 @@ void FindTarget(flecs::iter& it, size_t i, Turret& turret, Target& target,
     }
 }
 
+/**
+ * @brief 炮塔瞄准系统：计算目标偏航角并平滑旋转炮塔头部
+ */
 void AimTarget(flecs::iter& it, size_t i,
     Turret& turret, Target& target, Position& p) 
 {
@@ -935,12 +1055,18 @@ void AimTarget(flecs::iter& it, size_t i,
     }
 }
 
+/**
+ * @brief 炮塔射击计时器：累加帧时间
+ */
 void FireCountdown(flecs::iter& it, size_t i,
     Turret& turret, Target& target) 
 {
     turret.t_since_fire += it.delta_time();
 }
 
+/**
+ * @brief 炮塔开火系统：计时到点时发射子弹（加农炮）或激活光束（激光）
+ */
 void FireAtTarget(flecs::iter& it, size_t i,
     Turret& turret, Target& target, Position& p)
 {
@@ -1008,6 +1134,9 @@ void FireAtTarget(flecs::iter& it, size_t i,
     }
 }
 
+/**
+ * @brief 激光光束控制系统：激活时持续伤害敌人并生成电离粒子效果
+ */
 void BeamControl(flecs::iter& it, size_t i,
     Position& p, Turret& turret, Target& target) 
 {
@@ -1053,10 +1182,16 @@ void BeamControl(flecs::iter& it, size_t i,
     }
 }
 
+/**
+ * @brief 应用后坐力到炮管位置（水平位移）
+ */
 void ApplyRecoil(Position& p, const Recoil& r) {
    p.x = TurretCannonLength - r.value; 
 }
 
+/**
+ * @brief 后坐力衰减系统：随时间线性减小后坐力值
+ */
 void DecreaseRecoil(flecs::iter& it, size_t, Recoil& r) {
    r.value -= it.delta_time() * DecreaseRecoilRate;
    if (r.value < 0) {
@@ -1064,6 +1199,9 @@ void DecreaseRecoil(flecs::iter& it, size_t, Recoil& r) {
    }
 }
 
+/**
+ * @brief 命中冷却衰减系统：随时间线性减小冷却值
+ */
 void DecreaseHitCoolDown(flecs::iter& it, size_t, HitCooldown& hc) {
    hc.value -= it.delta_time() * HitCooldownRate;
    if (hc.value < 0) {
@@ -1071,6 +1209,9 @@ void DecreaseHitCoolDown(flecs::iter& it, size_t, HitCooldown& hc) {
    }
 }
 
+/**
+ * @brief 粒子更新系统：每一帧衰减粒子的大小、颜色、速度，生命周期结束则销毁
+ */
 void ProgressParticle(flecs::iter& it, size_t i,
     ParticleLifespan& pl, const Particle& p, Box *box, Color *color, Velocity *vel)
 {
@@ -1096,6 +1237,15 @@ void ProgressParticle(flecs::iter& it, size_t i,
     }
 }
 
+/**
+ * @brief 创建爆炸特效：生成烟雾粒子、火花粒子和爆炸点光源
+ * @param ecs  ECS 世界
+ * @param p    爆炸中心位置
+ * @param pC   粒子数量缩放系数
+ * @param rC   粒子大小/速度缩放系数
+ * @param rgbRnd 颜色随机范围
+ * @param rgbC   颜色中心值
+ */
 void explode(flecs::world& ecs, Position& p, float pC, float rC, Color rgbRnd, Color rgbC) {
     for (int s = 0; s < SmokeParticleCount * pC; s ++) {
         float red = randf(rgbRnd.r) + rgbC.r;
@@ -1149,6 +1299,9 @@ static const Color firework_colors[] = {
 
 static const int firework_color_count = sizeof(firework_colors) / sizeof(firework_colors[0]);
 
+/**
+ * @brief 生成烟花粒子爆发效果（胜利庆祝用）
+ */
 static void spawn_firework(flecs::world& ecs, const Position& center) {
     float ox = randf(16.0) - 8.0;
     float oy = randf(8.0) + 5.0;
@@ -1199,6 +1352,9 @@ static void spawn_firework(flecs::world& ecs, const Position& center) {
 // On non-Windows platforms, Shift+Left drag is used instead.
 // ============================================================
 
+/**
+ * @brief 平台相关：检测鼠标中键是否按下（Win32）
+ */
 static bool platform_middle_mouse_down() {
 #ifdef _WIN32
     return (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
@@ -1207,6 +1363,9 @@ static bool platform_middle_mouse_down() {
 #endif
 }
 
+/**
+ * @brief 平台相关：获取鼠标光标屏幕坐标（Win32）
+ */
 static void platform_get_cursor_pos(float* x, float* y) {
 #ifdef _WIN32
     POINT pt;
@@ -1218,6 +1377,12 @@ static void platform_get_cursor_pos(float* x, float* y) {
 #endif
 }
 
+/**
+ * @brief 自定义鼠标驱动摄像机控制系统
+ *        左键拖拽 = 平移场景（XZ 平面）
+ *        中键拖拽 = 环绕观察（旋转摄像机）
+ *        右键单击 = 重置到初始位置
+ */
 void CameraControlSystem(flecs::iter& it, size_t i,
     CameraControl& cc, Position& pos, Rotation& rot)
 {
@@ -1302,9 +1467,10 @@ void CameraControlSystem(flecs::iter& it, size_t i,
     cc.last_mouse_y = cur_mouse_y;
 }
 
-// ============================================================
-// BillboardAnimSystem: animate billboard text scaling in
-// ============================================================
+/**
+ * @brief 公告板文本缩放动画系统：
+ *        从零开始 cubic ease-out 放大到目标尺寸，同时淡入自发光
+ */
 void BillboardAnimSystem(flecs::iter& it, size_t i,
     BillboardAnim& anim, Box& box, Emissive& em)
 {
@@ -1343,6 +1509,9 @@ void BillboardAnimSystem(flecs::iter& it, size_t i,
     }
 }
 
+/**
+ * @brief 胜利庆祝系统：胜利时持续生成烟花效果
+ */
 void VictoryCelebration(flecs::iter& it, size_t, Game& g) {
     if (!g.won) {
         return;
@@ -1356,10 +1525,9 @@ void VictoryCelebration(flecs::iter& it, size_t, Game& g) {
     }
 }
 
-// ============================================================
-// ScoreDisplay: Update HUD score in 3D space (above map)
-// Rebuilds score text only when score changes
-// ============================================================
+/**
+ * @brief 分数显示系统：在 3D 空间更新 HUD 分数（仅在分数变化时重建）
+ */
 void ScoreDisplay(flecs::iter& it, size_t, Game& g) {
     // Only rebuild when score changes
     if (g.displayed_score == g.score) {
@@ -1405,10 +1573,10 @@ void ScoreDisplay(flecs::iter& it, size_t, Game& g) {
     g.displayed_score = g.score;
 }
 
-// ============================================================
-// VictoryBillboard: Create a large 3D billboard when game is won
-// Only creates once when won=true
-// ============================================================
+/**
+ * @brief 胜利公告板系统：游戏胜利时创建大型 3D 文本 "VICTORY!" 和最终分数
+ *        文本带有缩放动画效果
+ */
 void VictoryBillboard(flecs::iter& it, size_t, Game& g) {
     if (!g.won || g.billboard_created) {
         return;
@@ -1464,7 +1632,9 @@ void VictoryBillboard(flecs::iter& it, size_t, Game& g) {
         .set<PointLight>({{1.0f, 1.0f, 0.8f}, 5.0f});
 }
 
-// GameOver display
+/**
+ * @brief 游戏结束公告板系统：失败时创建大型 3D 文本 "GAME OVER" 和最终分数
+ */
 void GameOverBillboard(flecs::iter& it, size_t, Game& g) {
     if (!g.failed || g.billboard_created) {
         return;
@@ -1510,6 +1680,9 @@ void GameOverBillboard(flecs::iter& it, size_t, Game& g) {
         .set<PointLight>({{1.0f, 0.1f, 0.1f}, 6.0f});
 }
 
+/**
+ * @brief 子弹命中检测系统：检测子弹与敌人的碰撞，造成伤害并在血量阈值触发爆炸特效
+ */
 void HitTarget(flecs::iter& it, size_t i, Position& p, Health& h, Box& b, 
     HitCooldown& hit_cooldown, const SpatialQuery& q, SpatialQueryResult& qr)
 {    
@@ -1539,6 +1712,9 @@ void HitTarget(flecs::iter& it, size_t i, Position& p, Health& h, Box& b,
     }
 }
 
+/**
+ * @brief 摧毁敌人系统：生命值 ≤ 0 时销毁敌人、清理血条、触发爆炸、更新分数
+ */
 void DestroyEnemy(flecs::entity e, Health& h, Position& p, Game& g) {
     flecs::world ecs = e.world();
     if (h.value <= 0) {
@@ -1559,9 +1735,9 @@ void DestroyEnemy(flecs::entity e, Health& h, Position& p, Game& g) {
     }
 }
 
-// ============================================================
-// HealthBarSystem: update health bar position & size to follow enemy
-// ============================================================
+/**
+ * @brief 血条跟随系统：每一帧更新血条位置跟随敌人，并依当前生命值缩放前景条宽度
+ */
 void HealthBarSystem(flecs::iter& it, size_t i,
     HealthBar& hb, Position& pos, Box& box)
 {
@@ -1603,10 +1779,11 @@ void HealthBarSystem(flecs::iter& it, size_t i,
     pos.x = ep->x + offset;
 }
 
-// ============================================================
-// HoverHighlightSystem: highlight enemy/turret under mouse cursor
-// Uses raycasting from camera through mouse position
-// ============================================================
+/**
+ * @brief 鼠标悬浮高亮系统：对鼠标光标下的敌人/炮塔应用高亮效果
+ *        使用光线投射从摄像机穿过鼠标位置检测碰撞
+ *        高亮效果包括：颜色变亮黄、强自发光、放大 30%
+ */
 void HoverHighlightSystem(flecs::iter& it, size_t, Game& g) {
     flecs::world ecs = it.world();
 
@@ -1799,10 +1976,9 @@ void HoverHighlightSystem(flecs::iter& it, size_t, Game& g) {
     }
 }
 
-
-
-
-
+/**
+ * @brief 注册所有自定义组件到 ECS 世界（定义成员变量）
+ */
 void init_components(flecs::world& ecs) {
     ecs.component<Game>()
         .member("level", &Game::level)
@@ -1870,6 +2046,9 @@ void init_components(flecs::world& ecs) {
     ecs.component<CameraControl>();
 }
 
+/**
+ * @brief 初始化游戏：创建全局 Singleton、加载预制体资源、设置摄像机和灯光
+ */
 void init_game(flecs::world& ecs) {
     // Singleton with global game data
     ecs.component<Game>().add(flecs::Singleton);
@@ -1940,7 +2119,9 @@ void init_game(flecs::world& ecs) {
     ecs.script().filename("etc/assets/laser.flecs").run();
 }
 
-// Build level
+/**
+ * @brief 构建关卡：生成路径网格、地面、瓦片、树木和初始炮塔
+ */
 void init_level(flecs::world& ecs) {
     Game& g = ecs.ensure<Game>();
 
@@ -2019,6 +2200,9 @@ void init_level(flecs::world& ecs) {
     }
 }
 
+/**
+ * @brief 注册所有 ECS 系统（游戏逻辑管线）
+ */
 void init_systems(flecs::world& ecs) {
     ecs.scope(ecs.entity("tower_defense"), [&](){ // Keep root scope clean
 
@@ -2155,6 +2339,9 @@ void init_systems(flecs::world& ecs) {
     });
 }
 
+/**
+ * @brief 程序入口：初始化 ECS 世界，导入模块，注册组件/系统，启动主循环
+ */
 int main(int argc, char *argv[]) {
     flecs::world ecs(argc, argv);
 
